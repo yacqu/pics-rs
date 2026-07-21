@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ImageEntry } from "@/types/image";
+import type { ImageEntry, Transform } from "@/types/image";
 
 /**
  * Typed wrappers around the Tauri commands exposed by the Rust backend
@@ -42,4 +42,43 @@ export function scanFolder(path: string): Promise<ImageEntry[]> {
  */
 export function getThumbnail(path: string, size: number): Promise<string> {
   return invoke<string>("get_thumbnail", { path, size });
+}
+
+/**
+ * Request payload for `export_image`. The backend rasterizes the source image
+ * with the given non-destructive transform stack applied and writes the result
+ * to `destPath` in the chosen format (spec §4.9). `quality` is 1-100 (ignored
+ * for lossless PNG); `preserveMetadata` controls whether EXIF is carried over
+ * (privacy-relevant, spec §4.9).
+ */
+export interface ExportRequest {
+  sourcePath: string;
+  destPath: string;
+  transforms: Transform[];
+  format: "jpeg" | "png" | "webp";
+  quality: number;
+  preserveMetadata: boolean;
+}
+
+/**
+ * Rasterize + encode an image on the backend and write it to disk. Returns the
+ * written destination path (spec §4.9). Image bytes never cross IPC — only the
+ * request metadata and the resulting path do (spec §6, §8.4).
+ */
+export function exportImage(request: ExportRequest): Promise<string> {
+  return invoke<string>("export_image", { request });
+}
+
+/**
+ * Rasterize the current image (with its transform stack applied) and place it
+ * on the system clipboard as an image (spec §4.6). Bytes are handled entirely
+ * in Rust; nothing large crosses IPC.
+ */
+export function copyImageToClipboard(
+  sourcePath: string,
+  transforms: Transform[],
+): Promise<void> {
+  return invoke("copy_image_to_clipboard", {
+    request: { sourcePath, transforms },
+  });
 }

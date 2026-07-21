@@ -52,8 +52,9 @@ pub fn get_thumbnail(app: AppHandle, path: String, size: u32) -> Result<String> 
         return Ok(dest.to_string_lossy().to_string());
     }
 
-    // Decode, downscale with a good default filter, and cache as PNG.
-    let img = image::open(source)?;
+    // Decode EXIF-upright (spec §4.5/§8.6), downscale with a good default
+    // filter, and cache as PNG.
+    let img = crate::commands::load_oriented(source)?;
     let thumb = img.thumbnail(size, size); // preserves aspect ratio, fast
     thumb.save_with_format(&dest, image::ImageFormat::Png)?;
 
