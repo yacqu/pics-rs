@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the main viewer window. Filesystem scope for arbitrary user-chosen folders is granted dynamically at runtime rather than pre-declared as a static wildcard (spec §8.12).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "dialog:default",
+    "fs:default",
+    "clipboard-manager:default"
+  ]
+}

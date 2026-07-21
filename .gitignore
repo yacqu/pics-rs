@@ -141,3 +141,23 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Bun
+.bun/
+
+# Rust / Cargo (Tauri backend)
+target/
+**/target/
+*.rs.bk
+
+# Tauri generated files
+apps/pics-rs/src-tauri/gen/
+apps/pics-rs/dist/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+*.iml

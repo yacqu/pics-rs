@@ -1,0 +1,22 @@
+{
+  "name": "pics-rs-monorepo",
+  "version": "0.1.0",
+  "description": "Lightweight photo viewer/editor built with Rust + Tauri v2 — Bun monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd apps/pics-rs dev",
+    "build": "bun run --cwd apps/pics-rs build",
+    "tauri": "bun run --cwd apps/pics-rs tauri",
+    "tauri:dev": "bun run --cwd apps/pics-rs tauri dev",
+    "tauri:build": "bun run --cwd apps/pics-rs tauri build",
+    "typecheck": "bun run --cwd apps/pics-rs typecheck"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

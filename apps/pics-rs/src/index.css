@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/*
+ * Class-based dark mode: the `dark:` variant activates whenever a `.dark`
+ * class is present on an ancestor (we toggle it on <html>). The
+ * preferencesStore keeps this class in sync with the user's theme choice
+ * (light / dark / system) and the OS `prefers-color-scheme`.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  /* Prevent the WebView from bouncing/selecting like a document. */
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}

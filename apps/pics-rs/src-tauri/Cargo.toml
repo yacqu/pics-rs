@@ -1,0 +1,53 @@
+[package]
+name = "pics-rs"
+version = "0.1.0"
+description = "Lightweight photo viewer/editor"
+authors = ["pics-rs contributors"]
+edition = "2021"
+rust-version = "1.77.2"
+license = "MIT"
+repository = "https://github.com/yacqu/pics-rs"
+
+# The library the app binary links against. `tauri::generate_context!` and the
+# mobile entrypoint live here.
+[lib]
+name = "pics_rs_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-clipboard-manager = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Core image decode/encode (spec §7). Covers the MVP formats.
+image = { version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+  "webp",
+  "gif",
+  "bmp",
+] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Single-instance routing is desktop-only (spec §4.10, §8.8).
+tauri-plugin-single-instance = "2"
+
+[features]
+# By default Tauri uses a bundled WebView on Windows/macOS; nothing custom here.
+default = []
+
+[profile.release]
+# Favour a small, fast-launching binary — aligns with the "lightweight" goal.
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
