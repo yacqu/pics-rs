@@ -36,6 +36,15 @@ image = { version = "0.25", default-features = false, features = [
   "bmp",
 ] }
 
+# Geometric ops: arbitrary-angle straighten via interpolated rotation (spec §7).
+imageproc = "0.25"
+# EXIF orientation normalization on load (spec §4.5, §8.6).
+kamadak-exif = "0.5"
+# EXIF preserve on JPEG->JPEG export, pure-Rust (spec §4.9, §7).
+img-parts = "0.3"
+# Image clipboard I/O, Rust-native cross-platform (spec §4.6, §7).
+arboard = "3"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Single-instance routing is desktop-only (spec §4.10, §8.8).
 tauri-plugin-single-instance = "2"

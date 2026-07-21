@@ -87,6 +87,8 @@ pub fn run() {
             commands::read_image_entry,
             commands::gallery::scan_folder,
             commands::thumbnail::get_thumbnail,
+            commands::export::export_image,
+            commands::export::copy_image_to_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running pics-rs application");

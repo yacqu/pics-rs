@@ -15,14 +15,37 @@ interface GalleryState {
   selectedPath: string | null;
   loading: boolean;
   error: string | null;
+  /**
+   * Active extension filter (spec §4.7 "basic filter by extension"). `null`
+   * means show every entry; otherwise only entries whose lowercase extension is
+   * in this set are visible. Stored as an array so it round-trips cleanly.
+   */
+  filterExtensions: string[] | null;
 
   loadFolder: (path: string, sort: SortOrder) => Promise<void>;
   setEntries: (entries: ImageEntry[]) => void;
   select: (path: string | null) => void;
   sortEntries: (sort: SortOrder) => void;
+  /** Set (or clear, with `null`) the extension filter. */
+  setFilter: (exts: string[] | null) => void;
+  /**
+   * Entries after applying `filterExtensions`, in sorted order. The grid and
+   * sibling navigation both read this so a filtered gallery stays consistent.
+   */
+  visibleEntries: () => ImageEntry[];
   /** Path of the sibling relative to the current selection (prev/next nav). */
   siblingPath: (delta: number) => string | null;
   clear: () => void;
+}
+
+/** Apply the extension filter to a list of entries (null = pass-through). */
+function applyFilter(
+  entries: ImageEntry[],
+  filter: string[] | null,
+): ImageEntry[] {
+  if (filter === null || filter.length === 0) return entries;
+  const allowed = new Set(filter.map((e) => e.toLowerCase()));
+  return entries.filter((entry) => allowed.has(entry.extension.toLowerCase()));
 }
 
 function sortEntriesBy(entries: ImageEntry[], sort: SortOrder): ImageEntry[] {
@@ -49,6 +72,7 @@ export const useGalleryStore = create<GalleryState>((set, getState) => ({
   selectedPath: null,
   loading: false,
   error: null,
+  filterExtensions: null,
 
   loadFolder: async (path, sort) => {
     set({ loading: true, error: null, folder: path });
@@ -70,16 +94,32 @@ export const useGalleryStore = create<GalleryState>((set, getState) => ({
   sortEntries: (sort) =>
     set((state) => ({ entries: sortEntriesBy(state.entries, sort) })),
 
+  setFilter: (exts) => set({ filterExtensions: exts }),
+
+  visibleEntries: () => {
+    const { entries, filterExtensions } = getState();
+    return applyFilter(entries, filterExtensions);
+  },
+
   siblingPath: (delta) => {
-    const { entries, selectedPath } = getState();
-    if (entries.length === 0) return null;
-    const index = entries.findIndex((e) => e.path === selectedPath);
-    if (index === -1) return entries[0]?.path ?? null;
+    const { entries, selectedPath, filterExtensions } = getState();
+    // Navigate within the currently visible (filtered) set so prev/next in the
+    // gallery matches what the user actually sees.
+    const visible = applyFilter(entries, filterExtensions);
+    if (visible.length === 0) return null;
+    const index = visible.findIndex((e) => e.path === selectedPath);
+    if (index === -1) return visible[0]?.path ?? null;
     // Cycle through siblings (spec §4.1).
-    const nextIndex = (index + delta + entries.length) % entries.length;
-    return entries[nextIndex]?.path ?? null;
+    const nextIndex = (index + delta + visible.length) % visible.length;
+    return visible[nextIndex]?.path ?? null;
   },
 
   clear: () =>
-    set({ folder: null, entries: [], selectedPath: null, error: null }),
+    set({
+      folder: null,
+      entries: [],
+      selectedPath: null,
+      error: null,
+      filterExtensions: null,
+    }),
 }));
