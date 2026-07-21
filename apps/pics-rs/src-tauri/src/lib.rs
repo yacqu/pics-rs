@@ -76,7 +76,7 @@ pub fn run() {
             {
                 use tauri_plugin_decorum::WebviewWindowExt;
                 if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_traffic_lights_inset(20.0, 24.0);
+                    let _ = win.set_traffic_lights_inset(20.0, 38.0);
                 }
             }
 
