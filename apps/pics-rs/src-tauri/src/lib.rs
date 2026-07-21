@@ -41,14 +41,16 @@ pub fn run() {
     // window instead of spawning a duplicate process (spec §8.8). Desktop only.
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(path) = first_image_arg(&argv) {
-                let _ = app.emit("open-image", path);
-            }
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_focus();
-            }
-        }));
+        builder = builder
+            .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+                if let Some(path) = first_image_arg(&argv) {
+                    let _ = app.emit("open-image", path);
+                }
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_focus();
+                }
+            }))
+            .plugin(tauri_plugin_decorum::init());
     }
 
     builder
@@ -66,6 +68,18 @@ pub fn run() {
                     }
                 }
             }
+
+            // Push the macOS traffic lights down so they line up with the
+            // toolbar icon row (which sits under the Overlay title bar). The
+            // inset is re-applied on resize/fullscreen by the decorum delegate.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_plugin_decorum::WebviewWindowExt;
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_traffic_lights_inset(20.0, 24.0);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

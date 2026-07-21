@@ -39,6 +39,9 @@ image = { version = "0.25", default-features = false, features = [
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Single-instance routing is desktop-only (spec §4.10, §8.8).
 tauri-plugin-single-instance = "2"
+# Nudges the macOS traffic lights down so they vertically center against the
+# toolbar icons under the Overlay title bar; re-applies the offset on resize.
+tauri-plugin-decorum = "1"
 
 [features]
 # By default Tauri uses a bundled WebView on Windows/macOS; nothing custom here.

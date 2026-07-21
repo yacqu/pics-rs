@@ -61,7 +61,10 @@ export default function Toolbar() {
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
 
   return (
-    <header className="flex items-center gap-1 border-b border-neutral-200 bg-neutral-50 px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-900">
+    <header
+      data-tauri-drag-region
+      className="flex items-center gap-1 bg-white pb-1.5 pl-[80px] pr-4 pt-3 text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100"
+    >
       <ToolButton label="Open image…" onClick={() => void openImageDialog()}>
         <ImageUp className="h-5 w-5" />
       </ToolButton>

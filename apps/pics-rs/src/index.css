@@ -26,3 +26,9 @@ body {
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }
+
+
+.icon-btn {
+  /* Prevents the button from being part of the drag handle */
+  -webkit-app-region: no-drag; 
+}
