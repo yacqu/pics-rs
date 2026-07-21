@@ -161,3 +161,6 @@ Thumbs.db
 # Editor
 .idea/
 *.iml
+
+# ignore images in testing/issues folder
+testing/issues/**.png
