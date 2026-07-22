@@ -2,11 +2,12 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { MVP_EXTENSIONS } from "@/types/image";
 import type { ExportOptions, ImageEntry } from "@/types/image";
 import {
-  assetUrl,
   readImageEntry,
   exportImage,
   copyImageToClipboard,
+  getPreview,
 } from "@/lib/tauri";
+import { VIEWER_PREVIEW_MAX_DIM } from "@/types/image";
 import { useViewerStore } from "@/stores/viewerStore";
 import { useGalleryStore } from "@/stores/galleryStore";
 import { usePreferencesStore } from "@/stores/preferencesStore";
@@ -56,20 +57,23 @@ export async function openImagePath(path: string): Promise<void> {
   prefetchSiblings();
 }
 
-/** Warm the WebView's HTTP cache for a sibling's full-res asset so stepping to
- * it paints instantly instead of decoding cold (spec §10 perf item "prefetch
- * next/prev entry"). Fire-and-forget; a failed/irrelevant prefetch is harmless. */
-function prefetchAsset(path: string | null): void {
+/** Warm the backend's screen-resolution preview cache for a sibling so
+ * stepping to it is a cache hit instead of a cold decode (spec §10 perf item
+ * "prefetch next/prev entry"). This is what the viewer actually displays at
+ * fit-to-window zoom — prefetching the full-res original (the old approach)
+ * warmed the wrong tier and did nothing to reduce the wait stepping there.
+ * Fire-and-forget; a failed/irrelevant prefetch (e.g. a dataless iCloud
+ * placeholder) is harmless. */
+function prefetchPreview(path: string | null): void {
   if (!path) return;
-  const img = new Image();
-  img.src = assetUrl(path);
+  void getPreview(path, VIEWER_PREVIEW_MAX_DIM).catch(() => {});
 }
 
 /** Prefetch both neighbors of the current gallery selection. */
 function prefetchSiblings(): void {
   const { siblingPath } = useGalleryStore.getState();
-  prefetchAsset(siblingPath(1));
-  prefetchAsset(siblingPath(-1));
+  prefetchPreview(siblingPath(1));
+  prefetchPreview(siblingPath(-1));
 }
 
 /**

@@ -19,6 +19,22 @@ export function assetUrl(path: string): string {
 }
 
 /**
+ * Coalesce concurrent calls that share a key into a single in-flight promise.
+ * Without this, React 18 StrictMode's double-invoked effects (and rapid
+ * re-renders that re-request the same path, e.g. arrow-key nav) fire the same
+ * expensive decode twice in parallel — observed doubling a slow preview
+ * generation's wall time since both copies compete for the same CPU cores.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
+function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const existing = inFlight.get(key);
+  if (existing) return existing as Promise<T>;
+  const promise = fn().finally(() => inFlight.delete(key));
+  inFlight.set(key, promise);
+  return promise as Promise<T>;
+}
+
+/**
  * Drain the path the app was launched to open (CLI arg / OS "Open with" on cold
  * start). Returns null if there was none. Called once when the UI mounts.
  */
@@ -54,7 +70,9 @@ export interface ThumbnailResult {
  * the thumbnail via `assetUrl`.
  */
 export function getThumbnail(path: string, size: number): Promise<ThumbnailResult> {
-  return invoke<ThumbnailResult>("get_thumbnail", { path, size });
+  return dedupe(`thumb:${path}:${size}`, () =>
+    invoke<ThumbnailResult>("get_thumbnail", { path, size }),
+  );
 }
 
 /**
@@ -84,7 +102,9 @@ export interface PreviewResult {
  * `getThumbnail` for an un-downloaded iCloud placeholder.
  */
 export function getPreview(path: string, maxDim: number): Promise<PreviewResult> {
-  return invoke<PreviewResult>("get_preview", { path, maxDim });
+  return dedupe(`preview:${path}:${maxDim}`, () =>
+    invoke<PreviewResult>("get_preview", { path, maxDim }),
+  );
 }
 
 /**

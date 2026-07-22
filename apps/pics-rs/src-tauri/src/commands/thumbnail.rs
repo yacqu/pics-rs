@@ -249,7 +249,14 @@ pub async fn get_thumbnail(app: AppHandle, path: String, size: u32) -> Result<Th
 /// the cold decodes out across all cores with rayon instead of the serial
 /// one-thumbnail-per-scrolled-tile trickle, so a freshly opened folder's grid
 /// fills in `total/num_cores` faster and without per-tile IPC latency.
-/// Dataless (iCloud, not downloaded) files and already-cached thumbnails are
+///
+/// Dataless (iCloud, not downloaded) files get the same QuickLook fallback
+/// `get_thumbnail` uses (never a full decode/download) — earlier this skipped
+/// them entirely, so a folder full of "Optimize Mac Storage" placeholders
+/// (common for an iCloud Photos folder) barely benefited from prewarming at
+/// all: each placeholder's QuickLook thumbnail was instead generated lazily,
+/// one at a time, whenever its tile happened to mount, competing with
+/// whatever the user was actively doing. Already-cached thumbnails are still
 /// skipped; per-file errors are swallowed — `get_thumbnail` remains the
 /// source of truth for what the UI actually shows a given tile.
 #[tauri::command]
@@ -261,7 +268,7 @@ pub async fn prewarm_folder(app: AppHandle, paths: Vec<String>, size: u32) -> Re
     tauri::async_runtime::spawn_blocking(move || {
         paths.par_iter().for_each(|path| {
             let source = PathBuf::from(path);
-            if !source.is_file() || crate::commands::is_dataless(&source) {
+            if !source.is_file() {
                 return;
             }
             let dest = match cache_key(&source, size) {
@@ -269,6 +276,10 @@ pub async fn prewarm_folder(app: AppHandle, paths: Vec<String>, size: u32) -> Re
                 Err(_) => return,
             };
             if dest.exists() {
+                return;
+            }
+            if crate::commands::is_dataless(&source) {
+                let _ = quicklook_thumbnail(&source, &dest, size);
                 return;
             }
             let _ = generate_and_cache(&source, &dest, size);

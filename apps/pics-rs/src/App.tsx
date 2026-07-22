@@ -40,7 +40,7 @@ export default function App() {
   const entryCount = useGalleryStore((s) => s.entries.length);
   const selectedPath = useGalleryStore((s) => s.selectedPath);
 
-  // Gallery mode shows a live preview above the grid once something is
+  // Gallery mode shows a live preview alongside the grid once something is
   // selected — like a slideshow you can scroll through — rather than closing
   // the gallery to show the image full-screen (testing notes #1). Before any
   // selection is made there's nothing to preview, so the grid takes the whole
@@ -106,15 +106,15 @@ export default function App() {
   return (
     <div className="relative flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
       <Toolbar />
-      <main className="flex flex-1 flex-col overflow-hidden">
+      <main className="flex flex-1 overflow-hidden">
         {viewMode === "gallery" ? (
           showGalleryPreview ? (
             <>
-              <div className="min-h-0 flex-[3] overflow-hidden">
-                <Viewer />
-              </div>
-              <div className="min-h-[220px] flex-[2] overflow-hidden border-t border-neutral-200 dark:border-neutral-800">
+              <div className="w-96 min-w-[280px] shrink-0 overflow-hidden border-r border-neutral-200 dark:border-neutral-800">
                 <Gallery />
+              </div>
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <Viewer />
               </div>
             </>
           ) : (

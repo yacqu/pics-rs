@@ -21,7 +21,7 @@ pub enum Error {
 
     /// The source is an iCloud placeholder that isn't downloaded to this Mac.
     /// Message starts with [`DATALESS_SENTINEL`] so the UI can special-case it.
-    #[error("E_DATALESS: file contents are not downloaded from iCloud")]
+    #[error("{sentinel}: file contents are not downloaded from iCloud", sentinel = DATALESS_SENTINEL)]
     Dataless,
 
     #[error("{0}")]

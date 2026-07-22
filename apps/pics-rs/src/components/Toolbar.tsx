@@ -275,24 +275,32 @@ export default function Toolbar() {
     0,
   );
 
-  let visibleGroups: ToolGroup[];
-  let overflowGroups: ToolGroup[];
+  // IDs rather than object references: `collapsible` is memoized, so on a
+  // render where its deps didn't change it returns *last* render's group
+  // objects while `rotateFlip`/`editTools`/etc. below are freshly created
+  // literals every render. Comparing those by reference (`.includes(group)`)
+  // fails on almost every render (any resize, zoom-%, fullscreen toggle...)
+  // and silently drops every collapsible button from the header — the bug
+  // behind "editing buttons disappeared" / "lost all icons in fullscreen".
+  // Comparing by the group's stable `id` sidesteps identity entirely.
+  let visibleIds: Set<string>;
+  let overflowIds: Set<string>;
   if (contentWidth >= baseUsed + totalCollapsibleWidth) {
     // Everything fits — no overflow menu needed at all.
-    visibleGroups = collapsible;
-    overflowGroups = [];
+    visibleIds = new Set(collapsible.map((g) => g.id));
+    overflowIds = new Set();
   } else {
     const budget = contentWidth - baseUsed - OVERFLOW_W - GAP;
     let used = 0;
-    visibleGroups = [];
-    overflowGroups = [];
+    visibleIds = new Set();
+    overflowIds = new Set();
     for (const group of collapsible) {
       const cost = DIVIDER_UNIT + group.width;
       if (used + cost <= budget) {
-        visibleGroups.push(group);
+        visibleIds.add(group.id);
         used += cost;
       } else {
-        overflowGroups.push(group);
+        overflowIds.add(group.id);
       }
     }
   }
@@ -319,8 +327,8 @@ export default function Toolbar() {
 
   // Close the menu automatically once everything fits again (window widened).
   useEffect(() => {
-    if (overflowGroups.length === 0) setOverflowOpen(false);
-  }, [overflowGroups.length]);
+    if (overflowIds.size === 0) setOverflowOpen(false);
+  }, [overflowIds.size]);
 
   // --- Double-click the header to zoom/restore the window, like the native
   // macOS title bar (testing notes #1). `data-tauri-drag-region` makes the
@@ -378,7 +386,7 @@ export default function Toolbar() {
           priority order) so the toolbar reads the same regardless of which
           ones fit. */}
       {[rotateFlip, editTools, undoRedo, copyExport]
-        .filter((g) => visibleGroups.includes(g))
+        .filter((g) => visibleIds.has(g.id))
         .map((group) => (
           <div key={group.id} className="contents">
             <Divider />
@@ -396,7 +404,7 @@ export default function Toolbar() {
           </div>
         ))}
 
-      {overflowGroups.length > 0 && (
+      {overflowIds.size > 0 && (
         <>
           <Divider />
           <div ref={overflowRef} className="relative">
@@ -413,7 +421,7 @@ export default function Toolbar() {
                 className="absolute right-0 top-full z-50 mt-1 w-48 rounded-md border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
               >
                 {[rotateFlip, editTools, undoRedo, copyExport]
-                  .filter((g) => overflowGroups.includes(g))
+                  .filter((g) => overflowIds.has(g.id))
                   .flatMap((g) => g.actions)
                   .map((a) => (
                     <button
