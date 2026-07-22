@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useViewerStore } from "@/stores/viewerStore";
 import { assetUrl } from "@/lib/tauri";
+import { rafThrottle } from "@/lib/rafThrottle";
 import type { ImageEntry, Transform } from "@/types/image";
 import CropOverlay from "./CropOverlay";
 import ResizePanel from "./ResizePanel";
@@ -169,14 +170,21 @@ export default function Viewer() {
   const scaleCY = layout.viewport.height > 0 ? layout.displayH / layout.viewport.height : 1;
 
   // Keep the store's container size in sync so it can compute fit-to-window.
+  // Coalesced to one update per frame — a window drag-resize fires the observer
+  // continuously, and each `setContainerSize` refits + re-renders the viewer.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const measure = () => setContainerSize(el.clientWidth, el.clientHeight);
+    const measure = rafThrottle(() =>
+      setContainerSize(el.clientWidth, el.clientHeight),
+    );
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      measure.cancel();
+    };
   }, [setContainerSize]);
 
   // --- Pan (spec §4.2): click-drag and space+drag. Disabled while cropping. ---

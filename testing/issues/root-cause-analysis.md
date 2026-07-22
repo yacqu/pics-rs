@@ -68,10 +68,15 @@ re-triggered.
 **Fix:** added scoped timing logs around every stage of the copy pipeline via the
 new `logger-rs` crate (decode / transform / rgba / clipboard / total), and gave
 the toolbar a real busy state (`uiStore.busy`) so Copy shows a spinner and is
-disabled while the backend works. The heavy work already runs on Tauri's command
-thread-pool, not the UI thread; the freeze perception was the missing feedback +
-invisible cost, both now addressed. Timing data will pinpoint any remaining
-platform-specific `arboard` cost.
+disabled while the backend works.
+
+> **Correction (see §7).** An earlier revision of this note claimed the heavy
+> work "already runs on Tauri's command thread-pool, not the UI thread." That was
+> wrong: `copy_image_to_clipboard` was a **synchronous** `#[tauri::command]`, and
+> Tauri runs sync commands **on the main thread** — so the 2–3 s decode + RGBA
+> conversion genuinely froze the UI. The real fix (§7) makes the command `async`
+> and runs the pipeline on a blocking worker via `spawn_blocking`, so the toolbar
+> spinner can actually animate while the copy runs.
 
 ### 3b. Crop doesn't update the preview (but Copy of the crop works)
 
@@ -165,3 +170,82 @@ the windowing math lines up into a perfect grid with equal `GAP` spacing and
 `PADDING` insets. Selecting an image scrolls the container so the selected row is
 aligned to the top of the viewport (kept in sync with the virtualization window),
 while a genuinely new folder still resets to the top.
+
+---
+
+## 7. Repeated app hangs on iCloud folders + scroll/resize lag (follow-up)
+
+**Symptom (second test pass):** browsing a folder inside `~/Documents` — an
+iCloud-synced location — the app "hangs repeatedly"; scrolling the gallery has a
+"crazy delay"; resizing the window is laggy. The new `logger-rs` output made the
+cause measurable, which is exactly what it was added for.
+
+**What the logs proved.** Two thumbnails took *tens of seconds* while their
+siblings took ~1 s:
+
+```
+[17:32:37] Generating 256px thumbnail for [Light]-App-Icon-Rounded.png took 74.83s
+[17:35:16] Generating 256px thumbnail for [Light]-App-Icon.png         took 60.66s
+[17:35:17] Generating 256px thumbnail for [Light]-Seriph-Logo-Text.png took  1.42s
+```
+
+A 256 px downscale of even a huge PNG is ~1 s of CPU (the fast rows prove it), so
+74.83 s is **not** compute — it is the process **blocked on a file read**. The
+folder lives under `~/Documents/Documents - MacBook/…`, i.e. iCloud Drive with
+**"Optimize Mac Storage"** on. Those two files were **dataless placeholders**:
+their bytes had been evicted from local disk, and the first `image::open()`
+blocked while macOS (`fileproviderd`) downloaded the file from iCloud. Once
+materialized, the immediate re-request is a cache hit (fast), which is why the
+same file logs a "cache hit" one line later. **So yes — this is an iCloud thing.**
+
+**Why it froze the *whole app*, not just one tile.** Every pixel-touching
+command (`get_thumbnail`, `read_image_entry`, `export_image`,
+`copy_image_to_clipboard`) was a **synchronous** `#[tauri::command]`. Tauri runs
+sync commands **on the main thread**, so a 60–75 s blocking iCloud download wedged
+the entire UI — no repaint, no resize, no scroll. The strictly *sequential*
+timestamps in the log (each generation starts only when the previous one ends)
+are the fingerprint of main-thread serialization. This is the same root cause as
+the Copy freeze in §3a.
+
+**Why scroll & resize specifically lagged.** The virtualized grid mounts a tile
+as it enters the viewport, and each tile fired a `get_thumbnail` immediately with
+**no concurrency cap, no debounce, and no real cancellation** — the old
+`useThumbnail` only ignored a stale *result*; the backend work still ran. Fast
+scrolling therefore queued dozens of blocking calls onto the already-wedged main
+thread. Resizing made it worse: the `ResizeObserver`s fired every frame, each
+re-rendering the grid (remounting tiles → re-firing thumbnail requests) and
+refitting the viewer, all competing for the same blocked thread.
+
+**Fixes (this change):**
+
+1. **Off the main thread.** All four pixel-touching commands are now `async` and
+   run their decode/encode/clipboard work inside `tauri::async_runtime::spawn_blocking`.
+   The UI thread never blocks on a decode or an iCloud download again — this is
+   the single change that stops the "repeated hangs."
+2. **Don't auto-download from iCloud while browsing.** New `is_dataless()`
+   (`commands/mod.rs`) checks the file's macOS `st_flags` for `SF_DATALESS` — a
+   `stat`, which does *not* materialize the file. `get_thumbnail` returns a
+   distinct `E_DATALESS` error for placeholders instead of triggering a
+   multi-minute blocking download; the gallery shows an unobtrusive **"In iCloud"**
+   tile (cloud-off icon) with a tooltip telling the user to download it in Finder.
+   Casual scrolling can no longer kick off a storm of iCloud downloads.
+3. **Bounded, debounced, cancellable requests.** Thumbnail requests go through a
+   small FIFO queue (`lib/thumbnailQueue.ts`, max 4 in-flight); `useThumbnail`
+   debounces ~90 ms (a tile scrolled past never requests) and aborts on
+   unmount/inputs-change (freeing the queue slot). Scrolling a large folder no
+   longer floods the backend.
+4. **rAF-throttled scroll/resize.** `onScroll` and both `ResizeObserver`s
+   (Gallery + Viewer) are coalesced to one update per animation frame
+   (`lib/rafThrottle.ts`), so a drag-resize or fast scroll re-renders at most once
+   per paint instead of many times per frame.
+
+**What the user can do about the iCloud files themselves.** These fixes stop the
+*app* from freezing, but a file that only exists in iCloud still has to be
+downloaded before it can be previewed at full quality. Options: right-click the
+folder in Finder → **Download Now**; or System Settings → Apple ID → iCloud →
+turn **Optimize Mac Storage** off for a machine that should keep everything local;
+or keep working folders outside `~/Desktop` and `~/Documents` (the two folders
+iCloud "Desktop & Documents" syncs). A future enhancement could add an in-app
+"download from iCloud" action on the placeholder tile (macOS exposes this via
+`NSFileManager`/`brctl download`), but that is intentionally left as an explicit,
+user-initiated action — never an automatic one triggered by scrolling.

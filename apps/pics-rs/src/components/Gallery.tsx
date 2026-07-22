@@ -3,6 +3,7 @@ import { ArrowUpDown, ImageOff } from "lucide-react";
 import { useGalleryStore } from "@/stores/galleryStore";
 import { usePreferencesStore } from "@/stores/preferencesStore";
 import { openImagePath } from "@/lib/actions";
+import { rafThrottle } from "@/lib/rafThrottle";
 import type { ImageEntry, SortKey } from "@/types/image";
 import GalleryTile from "@/components/GalleryTile";
 
@@ -72,13 +73,27 @@ export default function Gallery() {
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const measure = () =>
-      setSize({ width: el.clientWidth, height: el.clientHeight });
+    // Coalesce resize callbacks to one per frame: a drag-resize fires the
+    // observer continuously, and each measure re-renders the whole virtual grid.
+    const measure = rafThrottle(() =>
+      setSize({ width: el.clientWidth, height: el.clientHeight }),
+    );
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      measure.cancel();
+    };
   }, []);
+
+  // Scroll fires many times per frame; coalesce to one virtualization update per
+  // paint. `scrollTop` is read synchronously (React event) before the rAF tick.
+  const onScroll = useMemo(
+    () => rafThrottle((top: number) => setScrollTop(top)),
+    [],
+  );
+  useEffect(() => () => onScroll.cancel(), [onScroll]);
 
   // Grid geometry derived from measured width. The cell is a `cellWidth`-square
   // thumbnail stacked on a `LABEL_H` filename row (no tile padding, no internal
@@ -242,7 +257,7 @@ export default function Gallery() {
       {/* Scrollable virtualized grid */}
       <div
         ref={scrollRef}
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        onScroll={(e) => onScroll(e.currentTarget.scrollTop)}
         className="relative flex-1 overflow-y-auto"
       >
         {loading ? (

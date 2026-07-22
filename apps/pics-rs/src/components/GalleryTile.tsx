@@ -1,4 +1,4 @@
-import { ImageOff } from "lucide-react";
+import { CloudOff, ImageOff } from "lucide-react";
 import { useThumbnail } from "@/hooks/useThumbnail";
 import type { ImageEntry } from "@/types/image";
 
@@ -38,14 +38,21 @@ export default function GalleryTile({
   selected,
   onOpen,
 }: GalleryTileProps) {
-  const { src, loading, error } = useThumbnail(entry.path, size);
+  const { src, loading, error, dataless } = useThumbnail(entry.path, size);
+
+  // iCloud placeholder ("Optimize Mac Storage"): the file isn't downloaded to
+  // this Mac, so we deliberately don't block generating a thumbnail for it. Give
+  // the tile a distinct, non-alarming state and hint how to fix it.
+  const title = dataless
+    ? `${entry.name} — in iCloud (not downloaded). Download it in Finder to preview.`
+    : entry.name;
 
   return (
     <button
       type="button"
       onClick={() => onOpen(entry.path)}
-      title={entry.name}
-      aria-label={entry.name}
+      title={title}
+      aria-label={title}
       aria-pressed={selected}
       className={`group flex h-full w-full flex-col items-stretch rounded-md text-left transition-colors hover:bg-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-neutral-800 ${
         selected ? "bg-neutral-100 dark:bg-neutral-800" : ""
@@ -62,10 +69,16 @@ export default function GalleryTile({
         {loading && (
           <div className="h-full w-full animate-pulse bg-neutral-200 dark:bg-neutral-700" />
         )}
+        {dataless && (
+          <div className="flex flex-col items-center gap-1 px-2 text-center text-neutral-400 dark:text-neutral-500">
+            <CloudOff className="h-6 w-6" />
+            <span className="text-[10px] leading-tight">In iCloud</span>
+          </div>
+        )}
         {error && (
           <ImageOff className="h-6 w-6 text-neutral-400 dark:text-neutral-500" />
         )}
-        {!error && src && (
+        {!error && !dataless && src && (
           <img
             src={src}
             alt={entry.name}
