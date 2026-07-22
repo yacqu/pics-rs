@@ -15,7 +15,113 @@ Spec references (§n) point at [`docs/specs.md`](specs.md).
 
 ## Part 1 — UI evaluation
 
-_(placeholder — filled from UI subagent report)_
+### Overall assessment
+
+The UI is coherent and well-considered for a lightweight photo viewer/editor: a
+compact icon toolbar, a CSS-transform live-preview canvas, a virtualized gallery grid
+with an inline split-preview, and floating tool panels for crop/resize/straighten. The
+code is unusually careful about the hard parts (virtualization math, fit-to-window
+continuity, iCloud/dataless states, responsive toolbar collapse). The main problems
+are in the **keyboard layer** — global shortcuts conflict with the spec's clipboard
+bindings and leak through the export modal — plus a few missing states (image load
+errors, focus handling) and small visual bugs.
+
+### 1.1 UI coherence
+
+The layout model makes sense: persistent toolbar (`src/App.tsx:108`), a main pane that
+is either the full-width viewer, the full-width gallery, or a gallery-strip + viewer
+split once a tile is selected (`App.tsx:109-136`), and a status bar
+(`App.tsx:137-162`). Keeping the Gallery wrapper as the same element across the
+preview toggle (`App.tsx:118-126`) to preserve scroll/virtualization state is correct
+and well-documented. Tool panels (crop/resize/straighten) each self-gate on
+`activeTool` and render `null` otherwise (`src/components/Viewer.tsx:443-445`), so
+only one is ever visible. Empty/loading/error states are handled in the Gallery
+(`Gallery.tsx:260-272`), the empty viewer (`Viewer.tsx:341-347`), and the status bar.
+Dark mode is applied consistently via the root `.dark` class with paired `dark:`
+utilities throughout. The interaction model is clear and internally consistent.
+
+### 1.2 Immediate issues
+
+1. **Shortcuts ignore modifier keys, so `Ctrl/Cmd+C` and `Ctrl/Cmd+V` are hijacked —
+   High.** `src/hooks/useKeyboardShortcuts.ts:37-96` switches on bare `event.key`
+   with no `ctrlKey`/`metaKey` guard. `c` toggles the crop tool (`:72-78`), `v` flips
+   vertical (`:68-71`), `f` flips horizontal (`:64-67`), and `event.preventDefault()`
+   runs at `:96`. Pressing Ctrl+C (spec §4.1's "copy to clipboard") toggles the crop
+   tool and suppresses native copy; Ctrl+V flips the image vertically. Both a
+   functional conflict and a spec violation.
+
+2. **Global shortcuts stay live while the Export modal is open — High.**
+   `src/components/ExportDialog.tsx:75-82` renders a modal but installs no keydown
+   capture, and `useKeyboardShortcuts` is mounted app-wide (`App.tsx:30`). With focus
+   on a dialog button, arrow keys navigate to sibling images and `r`/`c`/`f`/`v`
+   mutate the image behind the modal.
+
+3. **Export dialog can't be dismissed with Escape — and Escape mutates the background
+   — Medium.** No Escape handler anywhere in `ExportDialog.tsx`; it closes only via
+   backdrop click (`:81`), the X (`:89-96`), or Cancel (`:213-219`). Escape falls
+   through to the global handler (`useKeyboardShortcuts.ts:79-92`), which switches to
+   gallery mode or closes the underlying image while the dialog stays open.
+
+4. **Viewer has no image `onError` state — Medium.** The main `<img>`
+   (`Viewer.tsx:419-436`) has only `onLoad` (`:423`). A corrupt file, revoked asset
+   URL, or missing file leaves the blurred thumbnail placeholder up indefinitely
+   (`showThumbPlaceholder`, `:218`/`:367`) or a blank pane, with no error affordance —
+   unlike the gallery tile, which has an `ImageOff` fallback.
+
+5. **The "Copying…" busy spinner never spins — Low.** `Toolbar.tsx:219` swaps the
+   Copy icon to `Loader2` when busy, but it renders without an `animate-spin` class
+   (`:401`, `:442`), so the loading indicator is a static spinner glyph.
+
+6. **Toolbar buttons lack a visible keyboard-focus indicator — Low (a11y).**
+   `Toolbar.tsx:53-70` (`ToolButton`) styles hover/active/disabled but has no
+   `focus-visible:` ring, unlike `GalleryTile.tsx:66` which does. Same for the Export
+   dialog's buttons.
+
+7. **Export dialog does no focus management — Low (a11y).** `ExportDialog.tsx:75-86`
+   sets `role="dialog"`/`aria-modal="true"` but has no autofocus on open and no focus
+   trap, so Tab can reach controls behind the modal.
+
+### 1.3 Spec mismatches
+
+1. **Clipboard shortcuts (Ctrl/Cmd+C copy, Ctrl/Cmd+V paste) are unimplemented** —
+   spec §4.1 lists them explicitly; `useKeyboardShortcuts.ts` has neither (and per
+   issue 1.2.1 actively binds those chords to other actions). Copy exists only as a
+   toolbar button (`Toolbar.tsx:216-222`). Paste-from-clipboard is absent from the UI
+   entirely — acceptable for MVP since §9 defers paste to v0.2, but §4.1 still lists
+   the binding.
+2. **No custom aspect-ratio input in the crop tool** — spec §4.3 wants presets *plus*
+   a custom ratio input; `CropOverlay.tsx:404` offers only
+   free / 1:1 / 4:3 / 16:9 / original. Minor.
+3. **Straighten has no auto-expand vs. crop-to-fit choice** — spec §4.5;
+   `StraightenControl.tsx` exposes only the angle slider, with crop-to-fit hard-coded
+   (see comment at `viewerStore.ts:28-29`). Minor.
+4. **No explicit "100% / actual size" control** — spec §4.1 asks for a fit-to-window
+   *and* 100% toggle; only fit exists (`Toolbar.tsx:377-383`, key `0` at
+   `useKeyboardShortcuts.ts:54-55`). Minor.
+
+### 1.4 Minor polish suggestions
+
+- Drag-drop silently ignores unsupported files/folders after showing the "Drop an
+  image to open" overlay (`App.tsx:91-97`) — a brief "unsupported file" hint would
+  close the loop.
+- `index.html:5` still points the favicon at the default `/vite.svg`.
+- The straighten and export-quality range sliders lack `aria-label`s
+  (`StraightenControl.tsx:63-71`, `ExportDialog.tsx:135-141`).
+- `copyCurrentToClipboard` reports failures only to `console.error`
+  (`src/lib/actions.ts:151-153`) — clipboard failures are invisible to the user; a
+  lightweight toast system would surface these (the code comments note its absence
+  repeatedly).
+
+### UI priority order
+
+| # | Finding | Severity | Effort |
+|---|---|---|---|
+| 1.2.1 | Modifier-key guard + real Ctrl/Cmd+C copy binding | High | Small |
+| 1.2.2 | Suspend global shortcuts while a modal is open | High | Small |
+| 1.2.3 | Escape closes the Export dialog | Medium | Trivial |
+| 1.2.4 | `onError` state for the viewer image | Medium | Small |
+| 1.2.5–7 | Spinner class, focus rings, dialog focus trap | Low | Small each |
+| 1.3.x | Spec gaps (custom ratio, 100% toggle, straighten choice) | Low | Per-feature |
 
 ---
 
