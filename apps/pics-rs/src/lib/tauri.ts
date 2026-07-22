@@ -19,6 +19,22 @@ export function assetUrl(path: string): string {
 }
 
 /**
+ * Coalesce concurrent calls that share a key into a single in-flight promise.
+ * Without this, React 18 StrictMode's double-invoked effects (and rapid
+ * re-renders that re-request the same path, e.g. arrow-key nav) fire the same
+ * expensive decode twice in parallel — observed doubling a slow preview
+ * generation's wall time since both copies compete for the same CPU cores.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
+function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const existing = inFlight.get(key);
+  if (existing) return existing as Promise<T>;
+  const promise = fn().finally(() => inFlight.delete(key));
+  inFlight.set(key, promise);
+  return promise as Promise<T>;
+}
+
+/**
  * Drain the path the app was launched to open (CLI arg / OS "Open with" on cold
  * start). Returns null if there was none. Called once when the UI mounts.
  */
@@ -37,11 +53,58 @@ export function scanFolder(path: string): Promise<ImageEntry[]> {
 }
 
 /**
- * Generate (or fetch from cache) a thumbnail for an image, returning the path
- * to the cached thumbnail file on disk. The WebView loads it via `assetUrl`.
+ * Result of `get_thumbnail`: the cached thumbnail's on-disk path plus the
+ * source image's pixel dimensions, folded in by the backend so callers don't
+ * need a separate dimension probe once a tile's thumbnail has loaded (spec
+ * §10 perf item "fold dimension-probing into thumbnail generation").
  */
-export function getThumbnail(path: string, size: number): Promise<string> {
-  return invoke<string>("get_thumbnail", { path, size });
+export interface ThumbnailResult {
+  thumbPath: string;
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * Generate (or fetch from cache) a thumbnail for an image, returning the path
+ * to the cached thumbnail file on disk plus its dimensions. The WebView loads
+ * the thumbnail via `assetUrl`.
+ */
+export function getThumbnail(path: string, size: number): Promise<ThumbnailResult> {
+  return dedupe(`thumb:${path}:${size}`, () =>
+    invoke<ThumbnailResult>("get_thumbnail", { path, size }),
+  );
+}
+
+/**
+ * Best-effort, fire-and-forget thumbnail prewarm for an entire folder (spec
+ * §10 "batch thumbnail prewarm"): rayon-parallelizes cold decodes across all
+ * cores so the grid fills in without a per-tile IPC trickle. Errors are not
+ * meaningful to the caller — `getThumbnail` remains the source of truth for
+ * what a given tile actually shows.
+ */
+export function prewarmFolder(paths: string[], size: number): Promise<void> {
+  return invoke("prewarm_folder", { paths, size });
+}
+
+/** Result of `get_preview`: the cached preview's on-disk path plus the
+ * *source* image's true pixel dimensions (spec §10 "two-tier viewer image"). */
+export interface PreviewResult {
+  previewPath: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Generate (or fetch from cache) a screen-resolution preview (longest edge
+ * capped at `maxDim`) for an image, so the viewer doesn't have to decode the
+ * full-resolution original just to show it at fit-to-window scale (spec §10
+ * "two-tier viewer image"). Rejects with the same `E_DATALESS` sentinel as
+ * `getThumbnail` for an un-downloaded iCloud placeholder.
+ */
+export function getPreview(path: string, maxDim: number): Promise<PreviewResult> {
+  return dedupe(`preview:${path}:${maxDim}`, () =>
+    invoke<PreviewResult>("get_preview", { path, maxDim }),
+  );
 }
 
 /**

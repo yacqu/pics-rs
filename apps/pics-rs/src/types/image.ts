@@ -16,6 +16,17 @@ export const MVP_EXTENSIONS = [
 
 export type SupportedExtension = (typeof MVP_EXTENSIONS)[number];
 
+/** Thumbnail edge length (px) requested from the backend cache. Fixed and
+ * independent of on-screen cell size (spec §4.7) — shared by the gallery
+ * grid and the folder-wide prewarm request so they always target the same
+ * cached thumbnails. */
+export const GALLERY_THUMB_SIZE = 256;
+
+/** Cap (longest edge, px) for the viewer's screen-resolution preview tier
+ * (spec §10 perf item "two-tier viewer image"). Comfortably above typical
+ * display resolutions so fit-to-window never looks soft. */
+export const VIEWER_PREVIEW_MAX_DIM = 2560;
+
 /** Metadata for a single image file on disk (returned by the backend). */
 export interface ImageEntry {
   /** Absolute path on disk. */

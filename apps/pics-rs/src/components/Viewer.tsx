@@ -8,9 +8,14 @@ import {
   type WheelEvent,
 } from "react";
 import { useViewerStore } from "@/stores/viewerStore";
-import { assetUrl } from "@/lib/tauri";
+import { assetUrl, getPreview, getThumbnail } from "@/lib/tauri";
 import { rafThrottle } from "@/lib/rafThrottle";
-import type { ImageEntry, Transform } from "@/types/image";
+import {
+  GALLERY_THUMB_SIZE,
+  VIEWER_PREVIEW_MAX_DIM,
+  type ImageEntry,
+  type Transform,
+} from "@/types/image";
 import CropOverlay from "./CropOverlay";
 import ResizePanel from "./ResizePanel";
 import StraightenControl from "./StraightenControl";
@@ -154,6 +159,64 @@ export default function Viewer() {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Two-tier image (spec §10 perf item): loading the full-resolution original
+  // straight into the WebView forces a heavy decode just to show it at
+  // fit-to-window scale. Fetch a capped-dimension preview instead and use it
+  // by default; only swap to the true original once the user zooms in past
+  // 100%, where the preview's resolution would actually show.
+  const [preview, setPreview] = useState<{ path: string; src: string } | null>(null);
+  useEffect(() => {
+    const path = current?.path ?? null;
+    if (!path) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    void getPreview(path, VIEWER_PREVIEW_MAX_DIM)
+      .then((result) => {
+        if (cancelled) return;
+        setPreview({ path, src: assetUrl(result.previewPath) });
+      })
+      .catch(() => {
+        // Fall back to the full-res asset (below) — most commonly a dataless
+        // placeholder, which shouldn't happen here since opening an image
+        // already downloads it first, but fail open rather than blocking.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [current?.path]);
+
+  // Thumbnail-first, backfill-with-real-image (testing notes: switching image
+  // via a gallery click or arrow keys should render *something* immediately
+  // instead of looking frozen while the preview/full decode is in flight —
+  // that decode can take many seconds for a large source). The gallery has
+  // almost always already resolved (and cached) this exact thumbnail, so this
+  // is normally an instant cache hit. `loadedPath` tracks which image's real
+  // src has actually painted; the blurred thumbnail stays visible until then.
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null);
+  useEffect(() => {
+    const path = current?.path ?? null;
+    if (!path) {
+      setThumbSrc(null);
+      return;
+    }
+    let cancelled = false;
+    void getThumbnail(path, GALLERY_THUMB_SIZE)
+      .then((result) => {
+        if (!cancelled) setThumbSrc(assetUrl(result.thumbPath));
+      })
+      .catch(() => {
+        // No thumbnail available (e.g. dataless) — nothing to show early.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [current?.path]);
+
+  const [loadedPath, setLoadedPath] = useState<string | null>(null);
+  const showThumbPlaceholder = thumbSrc !== null && loadedPath !== current?.path;
+
   const layout = useMemo(
     () => previewLayout(current, transforms),
     [current, transforms],
@@ -283,7 +346,10 @@ export default function Viewer() {
     );
   }
 
-  const src = assetUrl(current.path);
+  // Actual-pixel viewing (zoom > 100%) needs the true original; otherwise
+  // prefer the lighter preview tier once it's loaded for this exact image.
+  const usePreview = view.zoom <= 1 && preview?.path === current.path;
+  const src = usePreview ? preview.src : assetUrl(current.path);
   const cursor = !canPan ? "default" : dragging ? "grabbing" : "grab";
 
   return (
@@ -294,6 +360,20 @@ export default function Viewer() {
       style={{ cursor }}
       className="relative flex flex-1 items-center justify-center overflow-hidden bg-neutral-50 dark:bg-neutral-900"
     >
+      {/* Low-res placeholder shown until the real image (preview or full-res)
+          has actually painted — see the "thumbnail-first" effect above. Sized
+          to the container rather than replicating the crop/transform math;
+          it's gone within a frame or two once the thumbnail cache is warm. */}
+      {showThumbPlaceholder && (
+        <img
+          src={thumbSrc ?? undefined}
+          alt=""
+          aria-hidden
+          draggable={false}
+          className="pointer-events-none absolute inset-0 h-full w-full select-none object-contain p-8 opacity-60 blur-md"
+        />
+      )}
+
       {/* Assembly: sized to the displayed (post-crop/resize) image and scaled by
           zoom. Fit-to-window keeps zoom == fitZoom, so this is continuous. */}
       <div
@@ -340,6 +420,7 @@ export default function Viewer() {
                 src={src}
                 alt={current.name}
                 draggable={false}
+                onLoad={() => setLoadedPath(current.path)}
                 style={{
                   position: "absolute",
                   left: "50%",

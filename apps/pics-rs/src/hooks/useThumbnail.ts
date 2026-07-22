@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { assetUrl } from "@/lib/tauri";
 import { requestThumbnail } from "@/lib/thumbnailQueue";
+import { useGalleryStore } from "@/stores/galleryStore";
+import { useUiStore } from "@/stores/uiStore";
 
 /**
  * Resolve an on-disk thumbnail for `path` at `size` px (spec §4.7, §8.3). The
@@ -49,20 +51,42 @@ export function useThumbnail(path: string, size: number): ThumbnailState {
     dataless: false,
   });
 
+  // Re-fetch once this file finishes downloading from iCloud — a click may
+  // have triggered a real download via `previewImage`/`read_image_entry` —
+  // so a tile that showed "in iCloud" doesn't keep showing it forever after
+  // the file is actually materialized on disk.
+  const [retryTick, setRetryTick] = useState(0);
+  const downloading = useUiStore((s) => s.downloads[path] !== undefined);
+  const wasDownloading = useRef(false);
+  useEffect(() => {
+    if (wasDownloading.current && !downloading) {
+      setRetryTick((t) => t + 1);
+    }
+    wasDownloading.current = downloading;
+  }, [downloading]);
+
   useEffect(() => {
     const controller = new AbortController();
     setState({ src: null, loading: true, error: false, dataless: false });
 
     const timer = setTimeout(() => {
       requestThumbnail(path, size, controller.signal)
-        .then((thumbPath) => {
+        .then((result) => {
           if (controller.signal.aborted) return;
           setState({
-            src: assetUrl(thumbPath),
+            src: assetUrl(result.thumbPath),
             loading: false,
             error: false,
             dataless: false,
           });
+          // Fold the dimensions the backend already computed into the
+          // gallery entry, so opening this image later can skip a redundant
+          // metadata read (spec §10 perf item, see actions.ts `previewImage`).
+          if (result.width != null && result.height != null) {
+            useGalleryStore
+              .getState()
+              .setEntryDimensions(path, result.width, result.height);
+          }
         })
         .catch((err: unknown) => {
           if (controller.signal.aborted) return;
@@ -82,7 +106,7 @@ export function useThumbnail(path: string, size: number): ThumbnailState {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [path, size]);
+  }, [path, size, retryTick]);
 
   return state;
 }

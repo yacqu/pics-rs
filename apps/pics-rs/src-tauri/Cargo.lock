@@ -3284,6 +3284,7 @@ dependencies = [
  "img-parts",
  "kamadak-exif",
  "logger-rs",
+ "rayon",
  "serde",
  "serde_json",
  "tauri",
@@ -3294,6 +3295,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-single-instance",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

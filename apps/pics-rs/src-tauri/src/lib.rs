@@ -114,6 +114,8 @@ pub fn run() {
             commands::read_image_entry,
             commands::gallery::scan_folder,
             commands::thumbnail::get_thumbnail,
+            commands::thumbnail::prewarm_folder,
+            commands::thumbnail::get_preview,
             commands::export::export_image,
             commands::export::copy_image_to_clipboard,
         ])

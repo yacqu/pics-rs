@@ -6,8 +6,10 @@ import { showSibling } from "@/lib/actions";
 
 /**
  * Global keyboard shortcuts for the viewer (spec §4.1). Navigation, zoom, and
- * the editing tools are wired here. Behaviour is pane-aware: arrows open the
- * prev/next image in the viewer, but only move the highlight in the gallery.
+ * the editing tools are wired here. Arrow keys always step to the prev/next
+ * sibling and update the live preview — gallery mode shows that preview
+ * alongside the grid (testing notes #1), so this behaves the same in both
+ * panes rather than only moving a highlight in the gallery.
  */
 export function useKeyboardShortcuts(): void {
   const zoomBy = useViewerStore((s) => s.zoomBy);
@@ -17,17 +19,7 @@ export function useKeyboardShortcuts(): void {
   const flip = useViewerStore((s) => s.flip);
   const setActiveTool = useViewerStore((s) => s.setActiveTool);
 
-  const select = useGalleryStore((s) => s.select);
-  const siblingPath = useGalleryStore((s) => s.siblingPath);
-
-  /** Prev/next: open the sibling in the viewer, or move the gallery highlight. */
-  const navigate = (delta: number) => {
-    if (useUiStore.getState().viewMode === "gallery") {
-      select(siblingPath(delta));
-    } else {
-      void showSibling(delta);
-    }
-  };
+  const navigate = (delta: number) => void showSibling(delta);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -106,14 +98,5 @@ export function useKeyboardShortcuts(): void {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    zoomBy,
-    setFitToWindow,
-    closeImage,
-    pushTransform,
-    flip,
-    setActiveTool,
-    select,
-    siblingPath,
-  ]);
+  }, [zoomBy, setFitToWindow, closeImage, pushTransform, flip, setActiveTool]);
 }
