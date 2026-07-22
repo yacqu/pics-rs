@@ -42,18 +42,24 @@ fn cache_key(path: &Path, size: u32) -> Result<String> {
 /// protocol — the bytes never cross the IPC boundary (spec §6, §8.4).
 #[tauri::command]
 pub fn get_thumbnail(app: AppHandle, path: String, size: u32) -> Result<String> {
+    let log = logger_rs::scope!("get_thumbnail");
     let source = Path::new(&path);
     if !source.is_file() {
+        log.warn(format!("not a file: {}", source.display()));
         return Err(Error::Message(format!("not a file: {}", source.display())));
     }
 
     let dest = cache_dir(&app)?.join(cache_key(source, size)?);
     if dest.exists() {
+        // Warm-cache path — this is why the second open of a folder is fast.
+        log.debug(format!("cache hit ({size}px) for {}", source.display()));
         return Ok(dest.to_string_lossy().to_string());
     }
 
-    // Decode EXIF-upright (spec §4.5/§8.6), downscale with a good default
-    // filter, and cache as PNG.
+    // Cold path: full-resolution decode dominates the cost here (issue #5), so
+    // time it explicitly. Decode EXIF-upright (spec §4.5/§8.6), downscale with a
+    // good default filter, and cache as PNG.
+    let _t = log.timer(format!("Generating {size}px thumbnail for {}", source.display()));
     let img = crate::commands::load_oriented(source)?;
     let thumb = img.thumbnail(size, size); // preserves aspect ratio, fast
     thumb.save_with_format(&dest, image::ImageFormat::Png)?;

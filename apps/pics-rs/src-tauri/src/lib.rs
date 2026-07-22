@@ -59,6 +59,33 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PendingOpen::default())
         .setup(|app| {
+            // Initialize file + console logging as early as possible so the
+            // critical backend paths (scan, decode, thumbnail, export, copy)
+            // are instrumented from first use (spec §4.6/§4.7 perf visibility).
+            // The log file lives in the OS app-log dir; the console mirror shows
+            // up in `tauri dev`'s terminal.
+            let log_file = app
+                .path()
+                .app_log_dir()
+                .ok()
+                .map(|dir| dir.join("pics-rs.log"));
+            logger_rs::init(logger_rs::Config {
+                file: log_file.clone(),
+                // Slightly chattier in debug builds; Info in release.
+                min_level: if cfg!(debug_assertions) {
+                    logger_rs::Level::Debug
+                } else {
+                    logger_rs::Level::Info
+                },
+                console: true,
+                color: true,
+            });
+            let boot = logger_rs::scope!("startup");
+            match &log_file {
+                Some(path) => boot.info(format!("pics-rs started; logging to {}", path.display())),
+                None => boot.info("pics-rs started; console-only logging (no app-log dir)"),
+            }
+
             // Cold-start CLI arg: stash it for the frontend to pick up on mount.
             let args: Vec<String> = std::env::args().collect();
             if let Some(path) = first_image_arg(&args) {

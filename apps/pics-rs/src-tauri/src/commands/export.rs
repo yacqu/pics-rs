@@ -40,13 +40,20 @@ pub struct RenderRequest {
 /// the requested format. Returns `dest_path` on success (spec §4.9).
 #[tauri::command]
 pub fn export_image(request: ExportRequest) -> Result<String> {
+    let log = logger_rs::scope!("export_image");
     let source = Path::new(&request.source_path);
     if !source.is_file() {
+        log.warn(format!("not a file: {}", source.display()));
         return Err(Error::Message(format!("not a file: {}", source.display())));
     }
 
-    let img = load_oriented(source)?;
-    let img = apply_transforms(img, &request.transforms);
+    let _t = log.timer(format!(
+        "Export to {} (format={}, quality={})",
+        request.dest_path, request.format, request.quality
+    ));
+
+    let img = log.time("decode", || load_oriented(source))?;
+    let img = log.time("apply transforms", || apply_transforms(img, &request.transforms));
     let dest = Path::new(&request.dest_path);
 
     match request.format.to_ascii_lowercase().as_str() {
@@ -92,17 +99,30 @@ pub fn export_image(request: ExportRequest) -> Result<String> {
 /// `arboard`.
 #[tauri::command]
 pub fn copy_image_to_clipboard(request: RenderRequest) -> Result<()> {
+    let log = logger_rs::scope!("copy_image_to_clipboard");
     let source = Path::new(&request.source_path);
     if !source.is_file() {
+        log.warn(format!("not a file: {}", source.display()));
         return Err(Error::Message(format!("not a file: {}", source.display())));
     }
 
+    // Time the whole copy plus each stage — the notes call out copy latency
+    // specifically (issue #3/#4). The stage timers pinpoint whether the cost is
+    // decode, the RGBA conversion, or the platform clipboard handoff.
+    let _total = log.timer("Copy to clipboard");
+
+    let decode = log.timer("decode");
     let img = load_oriented(source)?;
-    let img = apply_transforms(img, &request.transforms);
-    let rgba = img.to_rgba8();
+    decode.done();
+
+    let img = log.time("apply transforms", || apply_transforms(img, &request.transforms));
+
+    let rgba = log.time("to rgba8", || img.to_rgba8());
     let (width, height) = (rgba.width() as usize, rgba.height() as usize);
     let bytes = rgba.into_raw();
+    log.debug(format!("rasterized {width}x{height} ({} bytes)", bytes.len()));
 
+    let clip = log.timer("clipboard set_image");
     let mut clipboard = arboard::Clipboard::new()
         .map_err(|e| Error::Message(format!("clipboard unavailable: {e}")))?;
     clipboard
@@ -112,6 +132,7 @@ pub fn copy_image_to_clipboard(request: RenderRequest) -> Result<()> {
             bytes: Cow::from(bytes),
         })
         .map_err(|e| Error::Message(format!("clipboard write failed: {e}")))?;
+    clip.done();
 
     Ok(())
 }

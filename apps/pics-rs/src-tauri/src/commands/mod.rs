@@ -132,8 +132,11 @@ pub fn build_entry(path: &Path, with_dimensions: bool) -> Result<ImageEntry> {
 /// Read metadata (including pixel dimensions) for a single image file.
 #[tauri::command]
 pub fn read_image_entry(path: String) -> Result<ImageEntry> {
+    let log = logger_rs::scope!("read_image_entry");
+    let _t = log.timer(format!("Read image entry {path}"));
     let path = Path::new(&path);
     if !path.is_file() {
+        log.warn(format!("not a file: {}", path.display()));
         return Err(Error::Message(format!("not a file: {}", path.display())));
     }
     build_entry(path, true)

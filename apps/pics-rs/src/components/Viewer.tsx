@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -8,7 +9,7 @@ import {
 } from "react";
 import { useViewerStore } from "@/stores/viewerStore";
 import { assetUrl } from "@/lib/tauri";
-import type { Transform } from "@/types/image";
+import type { ImageEntry, Transform } from "@/types/image";
 import CropOverlay from "./CropOverlay";
 import ResizePanel from "./ResizePanel";
 import StraightenControl from "./StraightenControl";
@@ -16,25 +17,128 @@ import StraightenControl from "./StraightenControl";
 /**
  * Live image preview. Per spec §6/§8.4, on-disk images are loaded directly by
  * the WebView via the asset protocol (never through IPC), and cheap live
- * transforms (rotate/flip/zoom/pan) are done with CSS transforms rather than
- * round-tripping pixels to Rust on every interaction. Crop/resize/straighten
- * still rasterize in the backend on export.
+ * transforms are done with CSS rather than round-tripping pixels to Rust on
+ * every interaction. Straighten still rasterizes in the backend on export.
+ *
+ * SIZING (fixes the first-scroll zoom jump): the image is sized purely by
+ * `scale(view.zoom)`. `view.zoom` is always the true on-screen scale — while
+ * fit-to-window is active it equals the computed fit factor — so entering and
+ * leaving fit is continuous and the first wheel tick scales smoothly around the
+ * cursor instead of snapping from "fit" to "actual size".
+ *
+ * CROP/RESIZE PREVIEW (fixes "crop doesn't change the preview"): the committed
+ * transform stack is walked into a clip-viewport layout so crop and resize are
+ * reflected live, matching what Copy/Export will produce.
  */
 
-/** Fold the rotate/flip parts of the transform stack into a CSS transform. */
-function cssFromTransforms(transforms: Transform[]): string {
+interface PreviewLayout {
+  /** CSS transform applied to the <img> (rotate + flip + straighten). */
+  imgTransform: string;
+  /** Full *oriented* image size (px): the box the <img>'s paint fills. */
+  contentW: number;
+  contentH: number;
+  /** Visible crop window within the oriented content, in content px. */
+  viewport: { x: number; y: number; width: number; height: number };
+  /** Final displayed size (px) after crop + resize (== effectiveDimensions). */
+  displayW: number;
+  displayH: number;
+}
+
+/**
+ * Flatten the transform stack into a clip-viewport layout for the live preview.
+ *
+ * The common pipeline is orientation ops (rotate/flip/straighten) first, then
+ * crop/resize. That is expressible as: paint the oriented full image, then clip
+ * a window and scale it. If an orientation op appears AFTER a crop/resize the
+ * single-viewport model can't represent it faithfully, so we fall back to an
+ * un-cropped oriented preview (old behavior) rather than render something wrong.
+ */
+function previewLayout(
+  current: ImageEntry | null,
+  transforms: Transform[],
+): PreviewLayout {
+  const nw = current?.width ?? 0;
+  const nh = current?.height ?? 0;
+
+  // Orientation (rotate/flip/straighten) folded into one CSS transform.
   let rotation = 0;
   let scaleX = 1;
   let scaleY = 1;
+  let sawClip = false; // a crop/resize has been seen
+  let complex = false; // orientation change after a crop → not modelable here
   for (const t of transforms) {
-    if (t.kind === "rotate") rotation += t.degrees;
-    else if (t.kind === "straighten") rotation += t.angle;
-    else if (t.kind === "flip") {
+    if (t.kind === "rotate") {
+      rotation += t.degrees;
+      if (sawClip) complex = true;
+    } else if (t.kind === "straighten") {
+      rotation += t.angle;
+      if (sawClip) complex = true;
+    } else if (t.kind === "flip") {
       if (t.axis === "horizontal") scaleX *= -1;
       else scaleY *= -1;
+      if (sawClip) complex = true;
+    } else if (t.kind === "crop" || t.kind === "resize") {
+      sawClip = true;
     }
   }
-  return `rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`;
+
+  const normRot = (((Math.round(rotation) % 360) + 360) % 360) as number;
+  const swap = normRot === 90 || normRot === 270;
+  const orientedW = swap ? nh : nw;
+  const orientedH = swap ? nw : nh;
+  const imgTransform = `rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`;
+
+  // Degenerate or non-canonical stacks: show the whole oriented image.
+  if (complex || orientedW <= 0 || orientedH <= 0) {
+    const w = Math.max(1, orientedW);
+    const h = Math.max(1, orientedH);
+    return {
+      imgTransform,
+      contentW: w,
+      contentH: h,
+      viewport: { x: 0, y: 0, width: w, height: h },
+      displayW: w,
+      displayH: h,
+    };
+  }
+
+  // Walk crop/resize in order, tracking the window in oriented-content px (ox,
+  // oy, cw, ch) and the running displayed size (dispW, dispH). A crop's coords
+  // are in the *current display* space, so convert through the running scale.
+  let ox = 0;
+  let oy = 0;
+  let cw = orientedW;
+  let ch = orientedH;
+  let dispW = orientedW;
+  let dispH = orientedH;
+  for (const t of transforms) {
+    if (t.kind === "crop") {
+      const kx = cw / dispW;
+      const ky = ch / dispH;
+      const cropX = Math.max(0, Math.min(t.x, dispW));
+      const cropY = Math.max(0, Math.min(t.y, dispH));
+      const cropW = Math.max(1, Math.min(t.width, dispW - cropX));
+      const cropH = Math.max(1, Math.min(t.height, dispH - cropY));
+      ox += cropX * kx;
+      oy += cropY * ky;
+      cw = cropW * kx;
+      ch = cropH * ky;
+      dispW = cropW;
+      dispH = cropH;
+    } else if (t.kind === "resize") {
+      dispW = Math.max(1, t.width);
+      dispH = Math.max(1, t.height);
+    }
+  }
+
+  return {
+    imgTransform,
+    contentW: orientedW,
+    contentH: orientedH,
+    viewport: { x: ox, y: oy, width: cw, height: ch },
+    displayW: dispW,
+    displayH: dispH,
+  };
 }
 
 export default function Viewer() {
@@ -43,20 +147,37 @@ export default function Viewer() {
   const view = useViewerStore((s) => s.view);
   const zoomAtPoint = useViewerStore((s) => s.zoomAtPoint);
   const setOffset = useViewerStore((s) => s.setOffset);
+  const setContainerSize = useViewerStore((s) => s.setContainerSize);
   const activeTool = useViewerStore((s) => s.activeTool);
   const straightenPreview = useViewerStore((s) => s.straightenPreview);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const editTransform = useMemo(
-    () => cssFromTransforms(transforms),
-    [transforms],
+  const layout = useMemo(
+    () => previewLayout(current, transforms),
+    [current, transforms],
   );
 
   // A live straighten preview (spec §4.5) is folded in as an extra rotation on
   // top of the committed stack; it never enters the transform history.
-  const previewTransform =
-    straightenPreview != null ? ` rotate(${straightenPreview}deg)` : "";
+  const imgTransform =
+    layout.imgTransform +
+    (straightenPreview != null ? ` rotate(${straightenPreview}deg)` : "");
+
+  // crop → resize scale for the content-scaler box.
+  const scaleCX = layout.viewport.width > 0 ? layout.displayW / layout.viewport.width : 1;
+  const scaleCY = layout.viewport.height > 0 ? layout.displayH / layout.viewport.height : 1;
+
+  // Keep the store's container size in sync so it can compute fit-to-window.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => setContainerSize(el.clientWidth, el.clientHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [setContainerSize]);
 
   // --- Pan (spec §4.2): click-drag and space+drag. Disabled while cropping. ---
   const [spaceHeld, setSpaceHeld] = useState(false);
@@ -148,7 +269,7 @@ export default function Viewer() {
 
   if (!current) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-neutral-400 dark:text-neutral-500">
+      <div className="flex flex-1 items-center justify-center bg-neutral-50 text-sm text-neutral-400 dark:bg-neutral-900 dark:text-neutral-500">
         Open an image to get started.
       </div>
     );
@@ -163,20 +284,71 @@ export default function Viewer() {
       onWheel={onWheel}
       onMouseDown={onMouseDown}
       style={{ cursor }}
-      className="relative flex flex-1 items-center justify-center overflow-hidden bg-neutral-100 dark:bg-neutral-950"
+      className="relative flex flex-1 items-center justify-center overflow-hidden bg-neutral-50 dark:bg-neutral-900"
     >
-      <img
-        src={src}
-        alt={current.name}
-        draggable={false}
+      {/* Assembly: sized to the displayed (post-crop/resize) image and scaled by
+          zoom. Fit-to-window keeps zoom == fitZoom, so this is continuous. */}
+      <div
+        className="relative will-change-transform"
         style={{
-          transform: `translate(${view.offsetX}px, ${view.offsetY}px) scale(${view.zoom}) ${editTransform}${previewTransform}`,
+          width: layout.displayW,
+          height: layout.displayH,
+          transform: `translate(${view.offsetX}px, ${view.offsetY}px) scale(${view.zoom})`,
           transformOrigin: "center",
-          maxWidth: view.fitToWindow ? "100%" : "none",
-          maxHeight: view.fitToWindow ? "100%" : "none",
         }}
-        className="select-none will-change-transform"
-      />
+      >
+        {/* Clip viewport — the box CropOverlay measures. Axis-aligned in
+            effective image space, so screen↔image mapping stays a plain scale. */}
+        <div
+          data-viewer-image
+          style={{
+            position: "relative",
+            width: layout.displayW,
+            height: layout.displayH,
+            overflow: "hidden",
+          }}
+        >
+          {/* Content scaler folds the crop→resize scale (top-left origin). */}
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              transform: `scale(${scaleCX}, ${scaleCY})`,
+              transformOrigin: "top left",
+            }}
+          >
+            {/* Oriented full image, shifted so the crop origin sits at (0,0). */}
+            <div
+              style={{
+                position: "absolute",
+                left: -layout.viewport.x,
+                top: -layout.viewport.y,
+                width: layout.contentW,
+                height: layout.contentH,
+              }}
+            >
+              <img
+                src={src}
+                alt={current.name}
+                draggable={false}
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: "50%",
+                  width: current.width ?? undefined,
+                  height: current.height ?? undefined,
+                  transform: `translate(-50%, -50%) ${imgTransform}`,
+                  transformOrigin: "center",
+                  maxWidth: "none",
+                  maxHeight: "none",
+                }}
+                className="select-none"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Tool overlays / panels — each renders null unless its tool is active. */}
       <CropOverlay containerRef={containerRef} />

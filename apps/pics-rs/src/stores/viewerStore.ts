@@ -52,13 +52,20 @@ export function effectiveDimensions(
 }
 
 interface ViewState {
-  /** Current zoom factor (1 = 100%). */
+  /** Current zoom factor (1 = 100%). Always the TRUE on-screen scale, so the
+   * status bar and the zoom-to-point math agree with the rendered pixels even
+   * while fit-to-window is active (fixes the first-scroll jump — the image is
+   * sized purely by `scale(zoom)`, never by toggling CSS max-width/height). */
   zoom: number;
   /** Pan offset in CSS pixels. */
   offsetX: number;
   offsetY: number;
   /** True = fit-to-window, false = actual-size/manual zoom. */
   fitToWindow: boolean;
+  /** The zoom factor that makes the (effective) image exactly fit the viewport.
+   * Recomputed from the container + image dimensions; while `fitToWindow` is
+   * true, `zoom` tracks this value. */
+  fitZoom: number;
 }
 
 interface ViewerState {
@@ -84,6 +91,15 @@ interface ViewerState {
   undo: () => void;
   redo: () => void;
   resetEdits: () => void;
+
+  /**
+   * Last measured size of the viewer container (CSS px). The `Viewer` pushes
+   * this on mount / resize so the store can compute the fit-to-window zoom
+   * without reaching into the DOM.
+   */
+  containerSize: { width: number; height: number };
+  /** Record the viewer container size and refit if fit-to-window is active. */
+  setContainerSize: (width: number, height: number) => void;
 
   setZoom: (zoom: number) => void;
   zoomBy: (factor: number) => void;
@@ -113,10 +129,43 @@ const INITIAL_VIEW: ViewState = {
   offsetX: 0,
   offsetY: 0,
   fitToWindow: true,
+  fitZoom: 1,
 };
 
 function clampZoom(zoom: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+}
+
+/**
+ * Zoom factor that makes the effective (post-transform) image exactly fit the
+ * container. Falls back to the current zoom when dimensions aren't known yet.
+ */
+function computeFitZoom(
+  current: ImageEntry | null,
+  transforms: Transform[],
+  containerSize: { width: number; height: number },
+  fallback: number,
+): number {
+  const { width, height } = effectiveDimensions(current, transforms);
+  const { width: cw, height: ch } = containerSize;
+  if (!width || !height || !cw || !ch) return fallback;
+  return clampZoom(Math.min(cw / width, ch / height));
+}
+
+/**
+ * Rebuild the view for a (possibly new) transform stack. When fit-to-window is
+ * active the zoom is re-derived so it keeps tracking the fit factor and the
+ * image stays centred; otherwise the manual zoom/offset are left untouched.
+ */
+function refitView(
+  view: ViewState,
+  current: ImageEntry | null,
+  transforms: Transform[],
+  containerSize: { width: number; height: number },
+): ViewState {
+  const fitZoom = computeFitZoom(current, transforms, containerSize, view.zoom);
+  if (!view.fitToWindow) return { ...view, fitZoom };
+  return { ...view, fitZoom, zoom: fitZoom, offsetX: 0, offsetY: 0 };
 }
 
 export const useViewerStore = create<ViewerState>((set, getState) => ({
@@ -126,16 +175,19 @@ export const useViewerStore = create<ViewerState>((set, getState) => ({
   view: INITIAL_VIEW,
   activeTool: "none",
   straightenPreview: null,
+  containerSize: { width: 0, height: 0 },
 
   openImage: (entry) =>
-    set({
+    set((state) => ({
       current: entry,
       transforms: [],
       redoStack: [],
-      view: INITIAL_VIEW,
+      // Seed the fit zoom immediately (the container size persists across
+      // images) so the first paint is already fitted — no scale(1) flash.
+      view: refitView(INITIAL_VIEW, entry, [], state.containerSize),
       activeTool: "none",
       straightenPreview: null,
-    }),
+    })),
 
   closeImage: () =>
     set({
@@ -148,10 +200,15 @@ export const useViewerStore = create<ViewerState>((set, getState) => ({
     }),
 
   pushTransform: (transform) =>
-    set((state) => ({
-      transforms: [...state.transforms, transform],
-      redoStack: [], // a new edit clears the redo history
-    })),
+    set((state) => {
+      const transforms = [...state.transforms, transform];
+      return {
+        transforms,
+        redoStack: [], // a new edit clears the redo history
+        // A crop/resize/rotate changes the effective size, so refit.
+        view: refitView(state.view, state.current, transforms, state.containerSize),
+      };
+    }),
 
   undo: () => {
     const { transforms } = getState();
@@ -161,6 +218,7 @@ export const useViewerStore = create<ViewerState>((set, getState) => ({
     set((state) => ({
       transforms: next,
       redoStack: [...state.redoStack, undone],
+      view: refitView(state.view, state.current, next, state.containerSize),
     }));
   },
 
@@ -168,13 +226,22 @@ export const useViewerStore = create<ViewerState>((set, getState) => ({
     const { redoStack } = getState();
     if (redoStack.length === 0) return;
     const restored = redoStack[redoStack.length - 1]!;
-    set((state) => ({
-      transforms: [...state.transforms, restored],
-      redoStack: state.redoStack.slice(0, -1),
-    }));
+    set((state) => {
+      const transforms = [...state.transforms, restored];
+      return {
+        transforms,
+        redoStack: state.redoStack.slice(0, -1),
+        view: refitView(state.view, state.current, transforms, state.containerSize),
+      };
+    });
   },
 
-  resetEdits: () => set({ transforms: [], redoStack: [] }),
+  resetEdits: () =>
+    set((state) => ({
+      transforms: [],
+      redoStack: [],
+      view: refitView(state.view, state.current, [], state.containerSize),
+    })),
 
   setZoom: (zoom) =>
     set((state) => ({
@@ -214,22 +281,43 @@ export const useViewerStore = create<ViewerState>((set, getState) => ({
   setOffset: (offsetX, offsetY) =>
     set((state) => ({ view: { ...state.view, offsetX, offsetY } })),
 
+  setContainerSize: (width, height) =>
+    set((state) => {
+      const containerSize = { width, height };
+      return {
+        containerSize,
+        view: refitView(state.view, state.current, state.transforms, containerSize),
+      };
+    }),
+
   setFitToWindow: (fit) =>
-    set((state) => ({
-      view: {
-        ...state.view,
-        fitToWindow: fit,
-        ...(fit ? { zoom: 1, offsetX: 0, offsetY: 0 } : {}),
-      },
-    })),
+    set((state) => {
+      if (!fit) return { view: { ...state.view, fitToWindow: false } };
+      // Refit against the current container + effective image size.
+      return {
+        view: refitView(
+          { ...state.view, fitToWindow: true },
+          state.current,
+          state.transforms,
+          state.containerSize,
+        ),
+      };
+    }),
 
   setActiveTool: (tool) => set({ activeTool: tool }),
 
   flip: (axis) =>
-    set((state) => ({
-      transforms: [...state.transforms, { kind: "flip", axis }],
-      redoStack: [],
-    })),
+    set((state) => {
+      const transforms: Transform[] = [
+        ...state.transforms,
+        { kind: "flip", axis },
+      ];
+      return {
+        transforms,
+        redoStack: [],
+        view: refitView(state.view, state.current, transforms, state.containerSize),
+      };
+    }),
 
   setStraightenPreview: (angle) => set({ straightenPreview: angle }),
 }));
