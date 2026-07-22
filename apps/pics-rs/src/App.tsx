@@ -108,18 +108,28 @@ export default function App() {
       <Toolbar />
       <main className="flex flex-1 overflow-hidden">
         {viewMode === "gallery" ? (
-          showGalleryPreview ? (
-            <>
-              <div className="w-96 min-w-[280px] shrink-0 overflow-hidden border-r border-neutral-200 dark:border-neutral-800">
-                <Gallery />
-              </div>
+          <>
+            {/* Gallery's wrapper stays the same element across the preview
+                toggle below (only its width class changes) so React patches
+                it in place instead of unmounting/remounting Gallery — a
+                remount here reset its scroll position and virtualization
+                state and forced every visible tile to re-fetch its
+                thumbnail, producing a visible jump on the first click. */}
+            <div
+              className={
+                showGalleryPreview
+                  ? "w-96 min-w-[280px] shrink-0 overflow-hidden border-r border-neutral-200 dark:border-neutral-800"
+                  : "flex-1 overflow-hidden"
+              }
+            >
+              <Gallery />
+            </div>
+            {showGalleryPreview && (
               <div className="min-w-0 flex-1 overflow-hidden">
                 <Viewer />
               </div>
-            </>
-          ) : (
-            <Gallery />
-          )
+            )}
+          </>
         ) : (
           <Viewer />
         )}
