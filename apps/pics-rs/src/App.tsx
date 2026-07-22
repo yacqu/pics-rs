@@ -5,6 +5,7 @@ import Toolbar from "@/components/Toolbar";
 import Viewer from "@/components/Viewer";
 import Gallery from "@/components/Gallery";
 import ExportDialog from "@/components/ExportDialog";
+import DownloadProgress from "@/components/DownloadProgress";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { openImagePath } from "@/lib/actions";
 import { takePendingOpen } from "@/lib/tauri";
@@ -37,6 +38,14 @@ export default function App() {
 
   const folder = useGalleryStore((s) => s.folder);
   const entryCount = useGalleryStore((s) => s.entries.length);
+  const selectedPath = useGalleryStore((s) => s.selectedPath);
+
+  // Gallery mode shows a live preview above the grid once something is
+  // selected — like a slideshow you can scroll through — rather than closing
+  // the gallery to show the image full-screen (testing notes #1). Before any
+  // selection is made there's nothing to preview, so the grid takes the whole
+  // pane.
+  const showGalleryPreview = viewMode === "gallery" && current !== null && selectedPath !== null;
 
   const [dragOver, setDragOver] = useState(false);
 
@@ -50,6 +59,23 @@ export default function App() {
     void takePendingOpen().then((path) => {
       if (path) void openImagePath(path);
     });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    // Progress for an in-flight iCloud download of a dataless placeholder
+    // (see `ensure_downloaded` in the backend), so opening a not-yet-
+    // downloaded file shows feedback instead of appearing to silently stall
+    // (testing notes: single click should download with visible progress).
+    const unlisten = listen<{ path: string; percent: number; complete: boolean }>(
+      "icloud-download-progress",
+      (event) => {
+        const { path, percent, complete } = event.payload;
+        useUiStore.getState().setDownloadProgress(path, complete ? null : percent);
+      },
+    );
     return () => {
       void unlisten.then((fn) => fn());
     };
@@ -80,8 +106,23 @@ export default function App() {
   return (
     <div className="relative flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
       <Toolbar />
-      <main className="flex flex-1 overflow-hidden">
-        {viewMode === "gallery" ? <Gallery /> : <Viewer />}
+      <main className="flex flex-1 flex-col overflow-hidden">
+        {viewMode === "gallery" ? (
+          showGalleryPreview ? (
+            <>
+              <div className="min-h-0 flex-[3] overflow-hidden">
+                <Viewer />
+              </div>
+              <div className="min-h-[220px] flex-[2] overflow-hidden border-t border-neutral-200 dark:border-neutral-800">
+                <Gallery />
+              </div>
+            </>
+          ) : (
+            <Gallery />
+          )
+        ) : (
+          <Viewer />
+        )}
       </main>
       <footer className="flex items-center gap-3 border-t border-neutral-200 bg-neutral-50 px-3 py-1 text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
         {viewMode === "gallery" ? (
@@ -117,6 +158,7 @@ export default function App() {
       ) : null}
 
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
+      <DownloadProgress />
     </div>
   );
 }

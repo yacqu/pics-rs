@@ -8,9 +8,9 @@ import {
   type WheelEvent,
 } from "react";
 import { useViewerStore } from "@/stores/viewerStore";
-import { assetUrl } from "@/lib/tauri";
+import { assetUrl, getPreview } from "@/lib/tauri";
 import { rafThrottle } from "@/lib/rafThrottle";
-import type { ImageEntry, Transform } from "@/types/image";
+import { VIEWER_PREVIEW_MAX_DIM, type ImageEntry, type Transform } from "@/types/image";
 import CropOverlay from "./CropOverlay";
 import ResizePanel from "./ResizePanel";
 import StraightenControl from "./StraightenControl";
@@ -154,6 +154,34 @@ export default function Viewer() {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Two-tier image (spec §10 perf item): loading the full-resolution original
+  // straight into the WebView forces a heavy decode just to show it at
+  // fit-to-window scale. Fetch a capped-dimension preview instead and use it
+  // by default; only swap to the true original once the user zooms in past
+  // 100%, where the preview's resolution would actually show.
+  const [preview, setPreview] = useState<{ path: string; src: string } | null>(null);
+  useEffect(() => {
+    const path = current?.path ?? null;
+    if (!path) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    void getPreview(path, VIEWER_PREVIEW_MAX_DIM)
+      .then((result) => {
+        if (cancelled) return;
+        setPreview({ path, src: assetUrl(result.previewPath) });
+      })
+      .catch(() => {
+        // Fall back to the full-res asset (below) — most commonly a dataless
+        // placeholder, which shouldn't happen here since opening an image
+        // already downloads it first, but fail open rather than blocking.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [current?.path]);
+
   const layout = useMemo(
     () => previewLayout(current, transforms),
     [current, transforms],
@@ -283,7 +311,10 @@ export default function Viewer() {
     );
   }
 
-  const src = assetUrl(current.path);
+  // Actual-pixel viewing (zoom > 100%) needs the true original; otherwise
+  // prefer the lighter preview tier once it's loaded for this exact image.
+  const usePreview = view.zoom <= 1 && preview?.path === current.path;
+  const src = usePreview ? preview.src : assetUrl(current.path);
   const cursor = !canPan ? "default" : dragging ? "grabbing" : "grab";
 
   return (

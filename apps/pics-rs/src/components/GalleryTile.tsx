@@ -1,5 +1,6 @@
-import { CloudOff, ImageOff } from "lucide-react";
+import { CloudOff, ImageOff, Loader2 } from "lucide-react";
 import { useThumbnail } from "@/hooks/useThumbnail";
+import { useUiStore } from "@/stores/uiStore";
 import type { ImageEntry } from "@/types/image";
 
 /**
@@ -39,13 +40,21 @@ export default function GalleryTile({
   onOpen,
 }: GalleryTileProps) {
   const { src, loading, error, dataless } = useThumbnail(entry.path, size);
+  // Set while this exact file is being materialized from iCloud after a click
+  // (see `ensure_downloaded` in the backend / App.tsx's event listener) — the
+  // tile swaps its "in iCloud" hint for live download feedback (testing
+  // notes: clicking a not-yet-downloaded file must show progress, not stall).
+  const downloadPercent = useUiStore((s) => s.downloads[entry.path]);
 
   // iCloud placeholder ("Optimize Mac Storage"): the file isn't downloaded to
   // this Mac, so we deliberately don't block generating a thumbnail for it. Give
   // the tile a distinct, non-alarming state and hint how to fix it.
-  const title = dataless
-    ? `${entry.name} — in iCloud (not downloaded). Download it in Finder to preview.`
-    : entry.name;
+  const title =
+    downloadPercent != null
+      ? `${entry.name} — downloading from iCloud… ${Math.round(downloadPercent)}%`
+      : dataless
+        ? `${entry.name} — in iCloud (not downloaded). Click to download.`
+        : entry.name;
 
   return (
     <button
@@ -66,28 +75,35 @@ export default function GalleryTile({
             : "ring-1 ring-neutral-200 dark:ring-neutral-700"
         }`}
       >
-        {loading && (
+        {/* Mutually exclusive by priority: an in-flight download always wins
+            (it supersedes the thumbnail hook's own loading/dataless state),
+            then the thumbnail's own loading/error/dataless/loaded states. */}
+        {downloadPercent != null ? (
+          <div className="flex flex-col items-center gap-1.5 px-2 text-center text-blue-500 dark:text-blue-400">
+            <Loader2 className="h-6 w-6 animate-spin" />
+            <span className="text-[10px] leading-tight tabular-nums">
+              {Math.round(downloadPercent)}%
+            </span>
+          </div>
+        ) : loading ? (
           <div className="h-full w-full animate-pulse bg-neutral-200 dark:bg-neutral-700" />
-        )}
-        {dataless && (
+        ) : dataless ? (
           <div className="flex flex-col items-center gap-1 px-2 text-center text-neutral-400 dark:text-neutral-500">
             <CloudOff className="h-6 w-6" />
             <span className="text-[10px] leading-tight">In iCloud</span>
           </div>
-        )}
-        {error && (
+        ) : error ? (
           <ImageOff className="h-6 w-6 text-neutral-400 dark:text-neutral-500" />
-        )}
-        {!error && !dataless && src && (
-          <img
-            src={src}
-            alt={entry.name}
-            draggable={false}
-            loading="lazy"
-            className={`h-full w-full select-none object-cover transition-opacity ${
-              loading ? "opacity-0" : "opacity-100"
-            }`}
-          />
+        ) : (
+          src && (
+            <img
+              src={src}
+              alt={entry.name}
+              draggable={false}
+              loading="lazy"
+              className="h-full w-full select-none object-cover"
+            />
+          )
         )}
       </div>
       <div

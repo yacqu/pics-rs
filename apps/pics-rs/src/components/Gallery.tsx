@@ -2,9 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpDown, ImageOff } from "lucide-react";
 import { useGalleryStore } from "@/stores/galleryStore";
 import { usePreferencesStore } from "@/stores/preferencesStore";
-import { openImagePath } from "@/lib/actions";
+import { previewImage } from "@/lib/actions";
 import { rafThrottle } from "@/lib/rafThrottle";
-import type { ImageEntry, SortKey } from "@/types/image";
+import { GALLERY_THUMB_SIZE, type ImageEntry, type SortKey } from "@/types/image";
 import GalleryTile from "@/components/GalleryTile";
 
 /**
@@ -25,9 +25,6 @@ const GAP = 12; // gap between cells (matches 0.75rem)
 const MIN_TILE = 168; // target minimum cell width before adding a column
 const LABEL_H = 24; // filename row under each thumbnail
 const OVERSCAN = 2; // extra rows rendered above/below the viewport
-// Fixed thumbnail request size, independent of on-screen cell width, so
-// resizing the window never invalidates the backend thumbnail cache (spec §4.7).
-const THUMB_SIZE = 256;
 
 const SORT_LABELS: Record<SortKey, string> = {
   name: "Name",
@@ -292,11 +289,11 @@ export default function Gallery() {
               >
                 <GalleryTile
                   entry={entry}
-                  size={THUMB_SIZE}
+                  size={GALLERY_THUMB_SIZE}
                   thumbHeight={cellWidth}
                   labelHeight={LABEL_H}
                   selected={entry.path === selectedPath}
-                  onOpen={(path) => void openImagePath(path)}
+                  onOpen={(path) => void previewImage(path)}
                 />
               </div>
             ))}

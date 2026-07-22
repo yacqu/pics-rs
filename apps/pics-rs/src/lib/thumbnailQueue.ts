@@ -1,4 +1,4 @@
-import { getThumbnail } from "@/lib/tauri";
+import { getThumbnail, type ThumbnailResult } from "@/lib/tauri";
 
 /**
  * Bounded scheduler for `get_thumbnail` requests.
@@ -62,7 +62,7 @@ export async function requestThumbnail(
   path: string,
   size: number,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<ThumbnailResult> {
   if (signal.aborted) throw new AbortError();
   await acquire();
   try {

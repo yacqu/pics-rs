@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ImageEntry, SortOrder } from "@/types/image";
-import { scanFolder } from "@/lib/tauri";
+import { GALLERY_THUMB_SIZE } from "@/types/image";
+import { scanFolder, prewarmFolder } from "@/lib/tauri";
 
 /**
  * Gallery store (spec §4.7). Owns the current folder, its image entries, the
@@ -24,6 +25,14 @@ interface GalleryState {
 
   loadFolder: (path: string, sort: SortOrder) => Promise<void>;
   setEntries: (entries: ImageEntry[]) => void;
+  /**
+   * Fold in pixel dimensions the backend already computed while generating a
+   * tile's thumbnail (spec §10 perf item "fold dimension-probing into
+   * thumbnail generation"), so opening that image later can skip a redundant
+   * `read_image_entry` round-trip. No-op if the entry isn't in the current
+   * list or already has these dimensions.
+   */
+  setEntryDimensions: (path: string, width: number, height: number) => void;
   select: (path: string | null) => void;
   sortEntries: (sort: SortOrder) => void;
   /** Set (or clear, with `null`) the extension filter. */
@@ -79,6 +88,16 @@ export const useGalleryStore = create<GalleryState>((set, getState) => ({
     try {
       const entries = await scanFolder(path);
       set({ entries: sortEntriesBy(entries, sort), loading: false });
+      // Fire-and-forget: rayon-parallelized cold thumbnail decodes across all
+      // cores so the grid fills in without a per-tile IPC trickle (spec §10
+      // "batch thumbnail prewarm"). Errors here don't affect the UI —
+      // `get_thumbnail` remains the source of truth for each tile.
+      if (entries.length > 0) {
+        void prewarmFolder(
+          entries.map((e) => e.path),
+          GALLERY_THUMB_SIZE,
+        );
+      }
     } catch (err) {
       set({
         loading: false,
@@ -88,6 +107,17 @@ export const useGalleryStore = create<GalleryState>((set, getState) => ({
   },
 
   setEntries: (entries) => set({ entries }),
+
+  setEntryDimensions: (path, width, height) =>
+    set((state) => {
+      const index = state.entries.findIndex((e) => e.path === path);
+      if (index === -1) return state;
+      const entry = state.entries[index]!;
+      if (entry.width === width && entry.height === height) return state;
+      const entries = state.entries.slice();
+      entries[index] = { ...entry, width, height };
+      return { entries };
+    }),
 
   select: (path) => set({ selectedPath: path }),
 

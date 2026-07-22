@@ -1,7 +1,8 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { MVP_EXTENSIONS } from "@/types/image";
-import type { ExportOptions } from "@/types/image";
+import type { ExportOptions, ImageEntry } from "@/types/image";
 import {
+  assetUrl,
   readImageEntry,
   exportImage,
   copyImageToClipboard,
@@ -52,20 +53,58 @@ export async function openImagePath(path: string): Promise<void> {
   const { sortOrder } = usePreferencesStore.getState();
   usePreferencesStore.getState().setLastFolder(folder);
   await useGalleryStore.getState().loadFolder(folder, sortOrder);
+  prefetchSiblings();
+}
+
+/** Warm the WebView's HTTP cache for a sibling's full-res asset so stepping to
+ * it paints instantly instead of decoding cold (spec §10 perf item "prefetch
+ * next/prev entry"). Fire-and-forget; a failed/irrelevant prefetch is harmless. */
+function prefetchAsset(path: string | null): void {
+  if (!path) return;
+  const img = new Image();
+  img.src = assetUrl(path);
+}
+
+/** Prefetch both neighbors of the current gallery selection. */
+function prefetchSiblings(): void {
+  const { siblingPath } = useGalleryStore.getState();
+  prefetchAsset(siblingPath(1));
+  prefetchAsset(siblingPath(-1));
 }
 
 /**
- * Open the sibling image (prev/next) relative to the current selection in the
- * viewer, cycling within the loaded folder (spec §4.1). Unlike `openImagePath`
- * this does NOT re-scan the folder — the sibling list is already loaded — so
+ * Load `path` into the viewer's preview state and select it in the gallery,
+ * WITHOUT touching `viewMode`. Used by the gallery grid (spec §4.7 testing
+ * notes): clicking a tile must not close gallery mode — it just fills the
+ * preview area and the grid stays open so the user can keep browsing.
+ *
+ * Skips the `read_image_entry` round-trip when the gallery already has full
+ * dimensions for this path — folded in by `get_thumbnail`/`prewarm_folder`
+ * once its thumbnail has loaded (spec §10 perf item "fold dimension-probing
+ * into thumbnail generation") — since at that point every other `ImageEntry`
+ * field is already known from the folder scan too.
+ */
+export async function previewImage(path: string): Promise<void> {
+  const cached = useGalleryStore.getState().entries.find((e) => e.path === path);
+  const entry: ImageEntry =
+    cached && cached.width != null && cached.height != null
+      ? cached
+      : await readImageEntry(path);
+  useViewerStore.getState().openImage(entry);
+  useGalleryStore.getState().select(path);
+  prefetchSiblings();
+}
+
+/**
+ * Open the sibling image (prev/next) relative to the current selection,
+ * cycling within the loaded folder (spec §4.1). Unlike `openImagePath` this
+ * does NOT re-scan the folder — the sibling list is already loaded — so
  * arrow-key navigation stays snappy. No-op when there is no sibling.
  */
 export async function showSibling(delta: number): Promise<void> {
   const path = useGalleryStore.getState().siblingPath(delta);
   if (!path) return;
-  const entry = await readImageEntry(path);
-  useViewerStore.getState().openImage(entry);
-  useGalleryStore.getState().select(path);
+  await previewImage(path);
 }
 
 /** Open a folder in gallery mode via the native directory picker. */
