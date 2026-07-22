@@ -42,6 +42,31 @@ pub fn is_supported(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `path` is an iCloud "dataless" placeholder — a file whose bytes have
+/// been evicted from local disk by "Optimize Mac Storage". The *contents* aren't
+/// present, so the first `read`/`open` blocks while macOS materializes the file
+/// from iCloud (tens of seconds for a large image). Callers check this to avoid
+/// stalling on a download they didn't ask for.
+///
+/// Detection uses the file's `st_flags` (a `stat`, which does NOT materialize
+/// the file): macOS sets `SF_DATALESS` (0x4000_0000) on placeholder objects.
+/// Non-macOS platforms have no such concept, so this is always `false`.
+#[cfg(target_os = "macos")]
+pub fn is_dataless(path: &Path) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    // SF_DATALESS: "file is a dataless placeholder object" (sys/stat.h).
+    const SF_DATALESS: u32 = 0x4000_0000;
+    std::fs::metadata(path)
+        .map(|m| m.st_flags() & SF_DATALESS != 0)
+        .unwrap_or(false)
+}
+
+/// Non-macOS platforms have no iCloud dataless placeholders.
+#[cfg(not(target_os = "macos"))]
+pub fn is_dataless(_path: &Path) -> bool {
+    false
+}
+
 /// Read the EXIF orientation tag (values 1-8, spec §4.5/§8.6). Returns `1`
 /// (normal) when the file has no EXIF, isn't readable, or lacks the tag.
 pub fn exif_orientation(path: &Path) -> u32 {
@@ -130,11 +155,25 @@ pub fn build_entry(path: &Path, with_dimensions: bool) -> Result<ImageEntry> {
 }
 
 /// Read metadata (including pixel dimensions) for a single image file.
+///
+/// Dimension probing reads the file header, which for an iCloud placeholder
+/// blocks while the file downloads. This is an explicit, single-file action
+/// (the user opened this image), so we still probe — but the whole thing runs on
+/// a blocking worker via `spawn_blocking` so the UI thread never freezes on it
+/// (a plain sync command would run on the main thread).
 #[tauri::command]
-pub fn read_image_entry(path: String) -> Result<ImageEntry> {
-    let path = Path::new(&path);
+pub async fn read_image_entry(path: String) -> Result<ImageEntry> {
+    let path = std::path::PathBuf::from(&path);
     if !path.is_file() {
+        let log = logger_rs::scope!("read_image_entry");
+        log.warn(format!("not a file: {}", path.display()));
         return Err(Error::Message(format!("not a file: {}", path.display())));
     }
-    build_entry(path, true)
+    tauri::async_runtime::spawn_blocking(move || {
+        let log = logger_rs::scope!("read_image_entry");
+        let _t = log.timer(format!("Read image entry {}", path.display()));
+        build_entry(&path, true)
+    })
+    .await
+    .map_err(|e| Error::Message(format!("read task panicked: {e}")))?
 }

@@ -97,10 +97,18 @@ function swapExtension(path: string, format: ExportOptions["format"]): string {
 export async function copyCurrentToClipboard(): Promise<void> {
   const { current, transforms } = useViewerStore.getState();
   if (!current) return;
+  // Show a busy state: the backend rasterizes the full-resolution image (decode
+  // + transform + RGBA), which can take a noticeable moment for large photos
+  // (spec §4.6). The button reflects this and blocks re-entry until it's done.
+  const { setBusy } = useUiStore.getState();
+  if (useUiStore.getState().busy) return; // a copy is already in flight
+  setBusy("Copying…");
   try {
     await copyImageToClipboard(current.path, transforms);
   } catch (err) {
     console.error("Failed to copy image to clipboard", err);
+  } finally {
+    setBusy(null);
   }
 }
 

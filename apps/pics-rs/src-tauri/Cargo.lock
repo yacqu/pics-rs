@@ -2528,6 +2528,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "logger-rs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3276,6 +3283,7 @@ dependencies = [
  "imageproc",
  "img-parts",
  "kamadak-exif",
+ "logger-rs",
  "serde",
  "serde_json",
  "tauri",

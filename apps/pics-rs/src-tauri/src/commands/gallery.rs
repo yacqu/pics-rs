@@ -9,8 +9,12 @@ use crate::error::{Error, Result};
 /// requests thumbnails/dimensions as tiles come into view.
 #[tauri::command]
 pub fn scan_folder(path: String) -> Result<Vec<ImageEntry>> {
+    let log = logger_rs::scope!("scan_folder");
+    let _t = log.timer(format!("Scanning folder {path}"));
+
     let dir = Path::new(&path);
     if !dir.is_dir() {
+        log.warn(format!("not a directory: {}", dir.display()));
         return Err(Error::Message(format!(
             "not a directory: {}",
             dir.display()
@@ -29,5 +33,6 @@ pub fn scan_folder(path: String) -> Result<Vec<ImageEntry>> {
             }
         }
     }
+    log.info(format!("found {} supported image(s)", entries.len()));
     Ok(entries)
 }

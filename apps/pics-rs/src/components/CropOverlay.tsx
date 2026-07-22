@@ -196,10 +196,13 @@ export default function CropOverlay({
   const measure = useCallback(() => {
     if (!active) return;
     const container = containerRef.current;
-    const img = container?.querySelector("img");
-    if (!container || !img) return;
+    // Measure the displayed (post-transform) image box — the clip viewport the
+    // Viewer exposes via `data-viewer-image` — not the raw <img>, whose layout
+    // box no longer matches what's on screen once crop/resize are applied.
+    const imgEl = container?.querySelector("[data-viewer-image]");
+    if (!container || !imgEl) return;
     const c = container.getBoundingClientRect();
-    const r = img.getBoundingClientRect();
+    const r = imgEl.getBoundingClientRect();
     setBox({
       left: r.left - c.left,
       top: r.top - c.top,

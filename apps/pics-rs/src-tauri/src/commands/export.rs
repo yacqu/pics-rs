@@ -38,82 +38,124 @@ pub struct RenderRequest {
 
 /// Decode the source upright, apply the edit stack, and encode to `dest_path` in
 /// the requested format. Returns `dest_path` on success (spec §4.9).
+///
+/// Runs the full decode → transform → encode pipeline on a blocking worker
+/// (`spawn_blocking`) so a large export never freezes the UI thread — a plain
+/// sync command executes on the main thread.
 #[tauri::command]
-pub fn export_image(request: ExportRequest) -> Result<String> {
+pub async fn export_image(request: ExportRequest) -> Result<String> {
     let source = Path::new(&request.source_path);
     if !source.is_file() {
+        let log = logger_rs::scope!("export_image");
+        log.warn(format!("not a file: {}", source.display()));
         return Err(Error::Message(format!("not a file: {}", source.display())));
     }
 
-    let img = load_oriented(source)?;
-    let img = apply_transforms(img, &request.transforms);
-    let dest = Path::new(&request.dest_path);
+    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        let log = logger_rs::scope!("export_image");
+        let source = Path::new(&request.source_path);
+        let _t = log.timer(format!(
+            "Export to {} (format={}, quality={})",
+            request.dest_path, request.format, request.quality
+        ));
 
-    match request.format.to_ascii_lowercase().as_str() {
-        "jpeg" | "jpg" => {
-            encode_jpeg(&img, dest, request.quality)?;
-            // Best-effort EXIF carry-over: JPEG source -> JPEG dest only. Any
-            // failure leaves the (already-written) stripped file in place, which
-            // is the safe privacy default (spec §4.9). Full preserve for
-            // PNG/WebP is a v0.3 item.
-            //
-            // KNOWN LIMITATION (v0.3): the pixels have already been normalized
-            // upright by `load_oriented`, but the copied EXIF still carries the
-            // source's original Orientation tag. A viewer that honors EXIF would
-            // therefore re-apply the rotation. `preserve_jpeg_exif` clears the
-            // Orientation tag where it can to avoid this double-rotation.
-            if request.preserve_metadata && is_jpeg_path(source) {
-                let _ = preserve_jpeg_exif(source, dest);
+        let img = log.time("decode", || load_oriented(source))?;
+        let img = log.time("apply transforms", || apply_transforms(img, &request.transforms));
+        let dest = Path::new(&request.dest_path);
+
+        match request.format.to_ascii_lowercase().as_str() {
+            "jpeg" | "jpg" => {
+                encode_jpeg(&img, dest, request.quality)?;
+                // Best-effort EXIF carry-over: JPEG source -> JPEG dest only. Any
+                // failure leaves the (already-written) stripped file in place,
+                // which is the safe privacy default (spec §4.9). Full preserve
+                // for PNG/WebP is a v0.3 item.
+                //
+                // KNOWN LIMITATION (v0.3): the pixels have already been
+                // normalized upright by `load_oriented`, but the copied EXIF
+                // still carries the source's original Orientation tag. A viewer
+                // that honors EXIF would therefore re-apply the rotation.
+                // `preserve_jpeg_exif` clears the Orientation tag where it can to
+                // avoid this double-rotation.
+                if request.preserve_metadata && is_jpeg_path(source) {
+                    let _ = preserve_jpeg_exif(source, dest);
+                }
+            }
+            "png" => {
+                // `image`'s default PNG encoding; quality is ignored (lossless).
+                img.save_with_format(dest, ImageFormat::Png)?;
+            }
+            "webp" => {
+                // `image` 0.25 ships a lossless-only WebP encoder, so `quality`
+                // is ignored here. Encode via `DynamicImage::write_to`.
+                let mut buf = Cursor::new(Vec::new());
+                img.write_to(&mut buf, ImageFormat::WebP)
+                    .map_err(|e| Error::Message(format!("webp encode failed: {e}")))?;
+                std::fs::write(dest, buf.into_inner())?;
+            }
+            other => {
+                return Err(Error::Message(format!("unsupported export format: {other}")));
             }
         }
-        "png" => {
-            // `image`'s default PNG encoding; quality is ignored (lossless).
-            img.save_with_format(dest, ImageFormat::Png)?;
-        }
-        "webp" => {
-            // `image` 0.25 ships a lossless-only WebP encoder, so `quality` is
-            // ignored here. Encode via `DynamicImage::write_to`.
-            let mut buf = Cursor::new(Vec::new());
-            img.write_to(&mut buf, ImageFormat::WebP).map_err(|e| {
-                Error::Message(format!("webp encode failed: {e}"))
-            })?;
-            std::fs::write(dest, buf.into_inner())?;
-        }
-        other => {
-            return Err(Error::Message(format!("unsupported export format: {other}")));
-        }
-    }
 
-    Ok(request.dest_path)
+        Ok(request.dest_path)
+    })
+    .await
+    .map_err(|e| Error::Message(format!("export task panicked: {e}")))?
 }
 
 /// Rasterize the edit stack and place the result on the system clipboard as raw
 /// RGBA (spec §4.6). Cross-platform clipboard image formats are normalized by
 /// `arboard`.
 #[tauri::command]
-pub fn copy_image_to_clipboard(request: RenderRequest) -> Result<()> {
+pub async fn copy_image_to_clipboard(request: RenderRequest) -> Result<()> {
     let source = Path::new(&request.source_path);
     if !source.is_file() {
+        let log = logger_rs::scope!("copy_image_to_clipboard");
+        log.warn(format!("not a file: {}", source.display()));
         return Err(Error::Message(format!("not a file: {}", source.display())));
     }
 
-    let img = load_oriented(source)?;
-    let img = apply_transforms(img, &request.transforms);
-    let rgba = img.to_rgba8();
-    let (width, height) = (rgba.width() as usize, rgba.height() as usize);
-    let bytes = rgba.into_raw();
+    // The full-res decode + `to_rgba8` (tens of MB) + platform clipboard handoff
+    // is what made Copy "freeze the app for 2–3 s" (issue #3a): a sync command
+    // runs on the main thread. Do it all on a blocking worker so the UI stays
+    // live and the toolbar spinner can animate.
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let log = logger_rs::scope!("copy_image_to_clipboard");
+        let source = Path::new(&request.source_path);
 
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|e| Error::Message(format!("clipboard unavailable: {e}")))?;
-    clipboard
-        .set_image(arboard::ImageData {
-            width,
-            height,
-            bytes: Cow::from(bytes),
-        })
-        .map_err(|e| Error::Message(format!("clipboard write failed: {e}")))?;
+        // Time the whole copy plus each stage — the notes call out copy latency
+        // specifically (issue #3/#4). The stage timers pinpoint whether the cost
+        // is decode, the RGBA conversion, or the platform clipboard handoff.
+        let _total = log.timer("Copy to clipboard");
 
-    Ok(())
+        let decode = log.timer("decode");
+        let img = load_oriented(source)?;
+        decode.done();
+
+        let img = log.time("apply transforms", || apply_transforms(img, &request.transforms));
+
+        let rgba = log.time("to rgba8", || img.to_rgba8());
+        let (width, height) = (rgba.width() as usize, rgba.height() as usize);
+        let bytes = rgba.into_raw();
+        log.debug(format!("rasterized {width}x{height} ({} bytes)", bytes.len()));
+
+        let clip = log.timer("clipboard set_image");
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| Error::Message(format!("clipboard unavailable: {e}")))?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width,
+                height,
+                bytes: Cow::from(bytes),
+            })
+            .map_err(|e| Error::Message(format!("clipboard write failed: {e}")))?;
+        clip.done();
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Message(format!("copy task panicked: {e}")))?
 }
 
 /// Encode `img` as JPEG at `dest` with the given quality (1..=100). JPEG has no

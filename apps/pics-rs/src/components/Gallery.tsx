@@ -3,6 +3,7 @@ import { ArrowUpDown, ImageOff } from "lucide-react";
 import { useGalleryStore } from "@/stores/galleryStore";
 import { usePreferencesStore } from "@/stores/preferencesStore";
 import { openImagePath } from "@/lib/actions";
+import { rafThrottle } from "@/lib/rafThrottle";
 import type { ImageEntry, SortKey } from "@/types/image";
 import GalleryTile from "@/components/GalleryTile";
 
@@ -72,15 +73,34 @@ export default function Gallery() {
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const measure = () =>
-      setSize({ width: el.clientWidth, height: el.clientHeight });
+    // Coalesce resize callbacks to one per frame: a drag-resize fires the
+    // observer continuously, and each measure re-renders the whole virtual grid.
+    const measure = rafThrottle(() =>
+      setSize({ width: el.clientWidth, height: el.clientHeight }),
+    );
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      measure.cancel();
+    };
   }, []);
 
-  // Grid geometry derived from measured width.
+  // Scroll fires many times per frame; coalesce to one virtualization update per
+  // paint. `scrollTop` is read synchronously (React event) before the rAF tick.
+  const onScroll = useMemo(
+    () => rafThrottle((top: number) => setScrollTop(top)),
+    [],
+  );
+  useEffect(() => () => onScroll.cancel(), [onScroll]);
+
+  // Grid geometry derived from measured width. The cell is a `cellWidth`-square
+  // thumbnail stacked on a `LABEL_H` filename row (no tile padding, no internal
+  // gap), so a cell's content height is exactly `cellWidth + LABEL_H`. GAP is
+  // the space *between* cells; `rowHeight` is one cell plus that trailing gap.
+  // These pieces are handed to GalleryTile verbatim (thumbHeight/labelHeight) so
+  // the wrapper height below and the tile's DOM cannot disagree.
   const innerWidth = Math.max(0, size.width - PADDING * 2);
   const columns = Math.max(
     1,
@@ -88,9 +108,13 @@ export default function Gallery() {
   );
   const cellWidth =
     columns > 0 ? (innerWidth - (columns - 1) * GAP) / columns : innerWidth;
-  const rowHeight = cellWidth + LABEL_H + GAP;
+  const cellHeight = cellWidth + LABEL_H; // thumbnail square + label row
+  const rowHeight = cellHeight + GAP;
   const totalRows = Math.ceil(visible.length / columns);
   const totalHeight = totalRows * rowHeight;
+  // Full scroll height of the spacer: N rows of `rowHeight` drop one trailing
+  // GAP (the last row needs none) and add a PADDING inset top and bottom.
+  const spacerHeight = totalHeight - GAP + PADDING * 2;
 
   // Visible row range (+ overscan) from the current scroll offset.
   const firstRow = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
@@ -116,11 +140,29 @@ export default function Gallery() {
     }
   }
 
-  // Reset scroll to top when the folder changes.
+  // Reset scroll to top when the folder changes (a genuinely new folder starts
+  // at the top). The selected-image effect below runs after this and wins when
+  // a selection exists in the current folder.
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     setScrollTop(0);
   }, [folder]);
+
+  // Scroll the selected image's row to the TOP of the viewport whenever the
+  // selection changes (or the gallery/geometry becomes available) while showing
+  // this folder (spec §4.7). We keep `scrollTop` state in sync so the
+  // virtualization window recomputes for the new position.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !selectedPath || columns < 1 || rowHeight <= 0) return;
+    const index = visible.findIndex((e) => e.path === selectedPath);
+    if (index < 0) return; // stale selection not in the current visible list
+    const row = Math.floor(index / columns);
+    const maxScroll = Math.max(0, spacerHeight - size.height);
+    const target = Math.min(PADDING + row * rowHeight, maxScroll);
+    el.scrollTop = target;
+    setScrollTop(target);
+  }, [selectedPath, visible, columns, rowHeight, spacerHeight, size.height]);
 
   function changeSortKey(key: SortKey) {
     const next = { ...sortOrder, key };
@@ -215,7 +257,7 @@ export default function Gallery() {
       {/* Scrollable virtualized grid */}
       <div
         ref={scrollRef}
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        onScroll={(e) => onScroll(e.currentTarget.scrollTop)}
         className="relative flex-1 overflow-y-auto"
       >
         {loading ? (
@@ -232,12 +274,11 @@ export default function Gallery() {
             No images in this folder
           </div>
         ) : (
-          <div
-            className="relative"
-            style={{ height: totalHeight - GAP + PADDING * 2 }}
-          >
+          <div className="relative" style={{ height: spacerHeight }}>
             {/* This spacer carries the full scroll height; only the windowed
-                tiles are mounted, absolutely positioned with a PADDING inset. */}
+                tiles are mounted, absolutely positioned with a PADDING inset.
+                The wrapper is exactly one cell (cellWidth × cellHeight) and the
+                tile fills it, so the grid stays pixel-aligned. */}
             {windowed.map(({ entry, top, left }) => (
               <div
                 key={entry.path}
@@ -246,12 +287,14 @@ export default function Gallery() {
                   top,
                   left,
                   width: cellWidth,
-                  height: rowHeight - GAP,
+                  height: cellHeight,
                 }}
               >
                 <GalleryTile
                   entry={entry}
                   size={THUMB_SIZE}
+                  thumbHeight={cellWidth}
+                  labelHeight={LABEL_H}
                   selected={entry.path === selectedPath}
                   onOpen={(path) => void openImagePath(path)}
                 />

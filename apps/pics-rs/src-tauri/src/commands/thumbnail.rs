@@ -40,25 +40,57 @@ fn cache_key(path: &Path, size: u32) -> Result<String> {
 /// Generate (or return the cached) thumbnail for an image, returning the path
 /// to the thumbnail PNG on disk. The WebView loads it directly via the asset
 /// protocol — the bytes never cross the IPC boundary (spec §6, §8.4).
+///
+/// This is `async` and does the decode/resize/encode on a blocking worker
+/// (`spawn_blocking`) so the gallery flood never runs on the main thread. A
+/// plain sync command would — and a single slow decode (or an iCloud download,
+/// below) would freeze the entire window. The cheap parts (path checks, cache
+/// lookup, the dataless `stat`) stay inline since they don't touch pixels.
 #[tauri::command]
-pub fn get_thumbnail(app: AppHandle, path: String, size: u32) -> Result<String> {
-    let source = Path::new(&path);
+pub async fn get_thumbnail(app: AppHandle, path: String, size: u32) -> Result<String> {
+    let log = logger_rs::scope!("get_thumbnail");
+    let source = PathBuf::from(&path);
     if !source.is_file() {
+        log.warn(format!("not a file: {}", source.display()));
         return Err(Error::Message(format!("not a file: {}", source.display())));
     }
 
-    let dest = cache_dir(&app)?.join(cache_key(source, size)?);
+    let dest = cache_dir(&app)?.join(cache_key(&source, size)?);
     if dest.exists() {
+        // Warm-cache path — this is why the second open of a folder is fast.
+        log.debug(format!("cache hit ({size}px) for {}", source.display()));
         return Ok(dest.to_string_lossy().to_string());
     }
 
-    // Decode EXIF-upright (spec §4.5/§8.6), downscale with a good default
-    // filter, and cache as PNG.
-    let img = crate::commands::load_oriented(source)?;
-    let thumb = img.thumbnail(size, size); // preserves aspect ratio, fast
-    thumb.save_with_format(&dest, image::ImageFormat::Png)?;
+    // iCloud "Optimize Mac Storage" placeholder: the bytes aren't on disk, so a
+    // decode here would block for tens of seconds while macOS downloads the file
+    // (observed at 60–75 s). We refuse to auto-materialize during casual
+    // browsing/scrolling and let the UI show an "in iCloud" state instead; the
+    // user can download the file in Finder to make it appear (spec §4.7 perf).
+    if crate::commands::is_dataless(&source) {
+        log.warn(format!(
+            "iCloud placeholder not downloaded, skipping thumbnail: {}",
+            source.display()
+        ));
+        return Err(Error::Dataless);
+    }
 
-    Ok(dest.to_string_lossy().to_string())
+    // Cold path: full-resolution decode dominates the cost here (issue #5), so
+    // time it explicitly. Decode EXIF-upright (spec §4.5/§8.6), downscale with a
+    // good default filter, and cache as PNG — all off the main thread.
+    let dest_out = dest.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let log = logger_rs::scope!("get_thumbnail");
+        let _t = log.timer(format!("Generating {size}px thumbnail for {}", source.display()));
+        let img = crate::commands::load_oriented(&source)?;
+        let thumb = img.thumbnail(size, size); // preserves aspect ratio, fast
+        thumb.save_with_format(&dest, image::ImageFormat::Png)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Message(format!("thumbnail task panicked: {e}")))??;
+
+    Ok(dest_out.to_string_lossy().to_string())
 }
 
 /// Re-exported so callers can pick the display resample filter later; the

@@ -19,6 +19,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  Loader2,
 } from "lucide-react";
 import { useViewerStore } from "@/stores/viewerStore";
 import { useGalleryStore } from "@/stores/galleryStore";
@@ -86,6 +87,7 @@ export default function Toolbar() {
   const viewMode = useUiStore((s) => s.viewMode);
   const setViewMode = useUiStore((s) => s.setViewMode);
   const setExportOpen = useUiStore((s) => s.setExportOpen);
+  const busy = useUiStore((s) => s.busy);
 
   const theme = usePreferencesStore((s) => s.theme);
   const setTheme = usePreferencesStore((s) => s.setTheme);
@@ -205,11 +207,15 @@ export default function Toolbar() {
       <Divider />
 
       <ToolButton
-        label="Copy to clipboard"
+        label={busy ? "Copying…" : "Copy to clipboard"}
         onClick={() => void copyCurrentToClipboard()}
-        disabled={!hasImage}
+        disabled={!hasImage || busy !== null}
       >
-        <Copy className="h-5 w-5" />
+        {busy ? (
+          <Loader2 className="h-5 w-5 animate-spin" />
+        ) : (
+          <Copy className="h-5 w-5" />
+        )}
       </ToolButton>
       <ToolButton
         label="Export / Save…"
