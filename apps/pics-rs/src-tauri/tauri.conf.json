@@ -43,7 +43,7 @@
     "bundle": {
         "active": true,
         "targets": "all",
-        "category": "Graphics",
+        "category": "Graphics and Design",
         "shortDescription": "Lightweight photo viewer/editor",
         "longDescription": "A native-feel, fast-launching photo viewer and basic non-destructive editor (crop/resize/rotate) with folder/gallery browsing.",
         "icon": [
